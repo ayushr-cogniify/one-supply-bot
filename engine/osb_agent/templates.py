@@ -30,10 +30,21 @@ T = {
     "CLARIFY_SEGMENT": "Which segment or size? For example 90 oz laundry sanitizer.",
     "CLARIFY_CUT": "Which cut should I code? Give the item, the LC and the cut date, for example “10/15 cut of Crisp Linen 6x21 at Vegas”.",
     "CLARIFY_S5": "Do you want the changes for your PIR items, or for every item at the four LCs?",
-    "QUESTION_CAP": ("I have asked three questions on this request already. Restate it with the item, quantity, week "
-                     "and LC in one message and I will run it."),
-    "ACTION_PENDING": "Drafted {action_type} for your review. Nothing is sent or written until you approve it.",
-    "APPROVED": "Approved. {action_type} recorded as {record_id} in the Approvals sheet and the audit log.",
+    "TOO_MANY_QUESTIONS": ("I still need {missing_list} to run this. Add them in the Data Gaps panel or rephrase the "
+                           "request, and I'll continue."),
+    "PARTIAL_SCOPE": ("I've answered the {scenario} part. I can't {action}. This pilot only drafts actions, it doesn't "
+                      "create or send them.{draft_offer}"),
+    "CLARIFY_RANGE": "You gave a range of {low:g}\u2013{high:g}%. Should I run both ends, or one value?",
+    "CLARIFY_PERCENT": ("Should I apply {value:g}% to the current demand for {item} in week {week}, or do you have a "
+                        "number of cases?"),
+    "NO_DATA_RECOVERY": ("The loaded plan doesn't show {item} at {lc} getting back above {red_threshold} weeks of cover "
+                         "within the {n}-week horizon."),
+    "UNKNOWN_LINE": ("\u201c{name}\u201d isn't mapped to a work centre yet. Which line do you mean? The mapping can be "
+                     "saved in the Work_Centres sheet once Rushi confirms it."),
+    "ACTION_PENDING": ("Drafted {action_type} for your review. Approving records it in the Approvals log. This pilot "
+                       "does not send anything to SAP, Kinaxis or email."),
+    "APPROVED": ("Approved. {action_type} recorded as {record_id} in the Approvals log and the audit log. Nothing "
+                 "was sent to SAP, Kinaxis or email."),
     "REJECTED": "Rejected. Nothing was written. Pick an alternate code or leave the cut uncoded.",
     "SAVED_FACT": "Saved to the {sheet} sheet with your name and the time. Marked planner-entered.",
     "WELCOME": ("Ask about any of the five scenarios, or pick a question above. Everything I show comes from your "

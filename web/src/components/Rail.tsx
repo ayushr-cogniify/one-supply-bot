@@ -110,7 +110,6 @@ export default function Rail({ gaps, session, info, cardsOpen, openGap, setOpenG
     return null;
   };
   const v = session.last_validator;
-  const route = info.route ?? {};
 
   return (
     <aside className="col rail">
@@ -167,10 +166,11 @@ export default function Rail({ gaps, session, info, cardsOpen, openGap, setOpenG
           {info.models.map((m) => (
             <div key={m.stage} style={{ display: "contents" }}>
               <dt>{{ scope_gate: "Scope gate", slots: "Slots", orchestrator: "Orchestrator", s4_reasoning: "S4 reasoning" }[m.stage] ?? m.stage}</dt>
-              <dd>{route.engine === "claude" ? m.model : "Rules engine"}<div className="muted" style={{ fontSize: 11.5 }}>{m.model} when connected</div></dd>
+              <dd>{m.stage === "scope_gate" || m.stage === "slots" ? m.model : m.stage === "orchestrator" ? "Code, from tool values" : "Decision tree in code"}
+                <div className="muted" style={{ fontSize: 11.5 }}>{m.stage === "scope_gate" || m.stage === "slots" ? "rules engine if Claude is unavailable" : `${m.model} in the Databricks build`}</div></dd>
             </div>
           ))}
-          <dt>Last answer</dt><dd><b>{session.last_route ? (session.last_route === "rules" ? "rules engine" : session.last_route) : "none yet"}</b></dd>
+          <dt>Last answer</dt><dd><b>{session.last_route ? (session.last_route === "rules" ? "rules engine" : session.last_route.replace("claude-haiku-5-5", "Claude Haiku 5.5")) : "none yet"}</b></dd>
         </dl>
       </div>
 

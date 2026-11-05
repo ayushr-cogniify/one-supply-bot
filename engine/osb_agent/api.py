@@ -36,6 +36,7 @@ def boot(data_dir: str) -> str:
     m = _STATE["manifest"]
     info = {
         "snapshot": cx.snapshot_label(), "stock_to": cx.stock_label(),
+        "snapshot_start": cx.snapshot_date().isoformat(),
         "lcs": [{"code": k, "name": v} for k, v in cx.SITE_NAMES.items()],
         "weeks": [{"calweek": int(w), "label": cx.week_label(w)} for w in cx.cal().CALWEEK.head(8)],
         "load_report": m.get("load_report", {}), "frames": {k: {"rows": v["rows"], "bytes": v["bytes"]}

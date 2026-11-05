@@ -30,6 +30,42 @@ def _forecast_next(material, plan, weeks=9):
 
 
 def walk_decision_tree(cut: dict, answers: dict = None, inv=None, att=None, plan="load") -> dict:
+    """Walk the tree; when it proposes a code, also return at most one alternate (the code the tree
+    reaches when the deciding rule is set aside) and the recovery week from the Kinaxis plan."""
+    if isinstance(plan, str):
+        try:
+            plan = adapter.kinaxis_plan()
+        except FileNotFoundError:
+            plan = None
+    res = _walk(cut, answers, inv, att, plan)
+    v = res["values"]
+    v["alternate_code"], v["alternate_rule"], v["recovery_week"] = None, None, None
+    if v["proposed_code"]:
+        decisive = next((p["rule_id"] for p in v["path"] if p["outcome"] == "pass" and p["rule_id"] != "R05"), None)
+        if decisive:
+            alt = _walk(cut, answers, inv, att, plan, skip={decisive})["values"]
+            if alt["proposed_code"] and alt["proposed_code"] != v["proposed_code"]:
+                v["alternate_code"] = alt["proposed_code"]
+                v["alternate_rule"] = next((p["rule_id"] for p in alt["path"]
+                                            if p["outcome"] == "pass" and p["rule_id"] != "R05"), None)
+        v["recovery_week"] = _recovery_week(cut["material"], cut["lc"], plan)
+    return res
+
+
+def _recovery_week(material, lc, plan, red=2.0):
+    """First plan week whose WoC at the LC is back at or above the red threshold (None if never)."""
+    if plan is None:
+        return None
+    from .woc import add_woc, series
+    s = series(plan, str(material), lc)
+    if s.empty:
+        return None
+    s = add_woc(s)
+    hit = s[[w is not None and round(w, 1) >= red for w in s.woc]]
+    return int(hit.CALWEEK.iloc[0]) if not hit.empty else None
+
+
+def _walk(cut: dict, answers: dict = None, inv=None, att=None, plan=None, skip=frozenset()) -> dict:
     """cut: {cut_id, material, lc, cut_date, order_issue_flag?, entry_error_flag?, ...}
     answers: planner answers / facts keyed by rule id or fact name
       (force_majeure, mgmt_decision, national_pct, lc_pct, supplier_delay, stock_issue, atp_basis)."""
@@ -37,15 +73,12 @@ def walk_decision_tree(cut: dict, answers: dict = None, inv=None, att=None, plan
     a.update({k: v for k, v in cut.items() if k.endswith("_flag")})
     inv = adapter.inventory() if inv is None else inv
     att = adapter.attainment() if att is None else att
-    if isinstance(plan, str):
-        try:
-            plan = adapter.kinaxis_plan()
-        except FileNotFoundError:
-            plan = None
     path, needs = [], []
     m, lc, d = str(cut["material"]), cut["lc"], pd.Timestamp(cut["cut_date"])
 
     def step(rule, test, outcome, evidence=None, code=None):
+        if rule in skip and outcome == "pass":
+            outcome = "fail"
         path.append({"rule_id": rule, "test": test, "outcome": outcome, "evidence": evidence})
         return code if outcome == "pass" else None
 

@@ -28,7 +28,14 @@ def inventory_diff(date_a, date_b, materials=None, inv=None) -> pd.DataFrame:
     return df, da, db
 
 
-def kinaxis_diff(plan_a, plan_b, materials=None, min_move_weeks=1.0, week_index=0) -> pd.DataFrame:
+def kinaxis_diff(plan_a, plan_b, materials=None, min_move_weeks=1.0, calweek=None) -> pd.DataFrame:
+    """WoC for the same plan week in two snapshots. calweek defaults to the first planning week of
+    the newer snapshot. Each move gets its driver: the larger of the stock effect (projected stock
+    changed, demand held) and the demand effect (forward demand changed, stock held). Rows come
+    back ranked by risk: lowest WoC in the newer snapshot first, red before yellow."""
+    if calweek is None:
+        weeks = sorted(w for w in plan_b.CALWEEK.unique() if w != config.OPENING_BUCKET)
+        calweek = int(weeks[0])
     mats = materials or sorted(set(plan_a.MATERIAL) & set(plan_b.MATERIAL))
     rows = []
     for m in mats:
@@ -36,16 +43,34 @@ def kinaxis_diff(plan_a, plan_b, materials=None, min_move_weeks=1.0, week_index=
             sa, sb = series(plan_a, m, loc), series(plan_b, m, loc)
             if sa.empty or sb.empty:
                 continue
-            wa, wb = add_woc(sa).iloc[week_index], add_woc(sb).iloc[week_index]
-            if wa.woc is None or wb.woc is None:
+            wa, wb = add_woc(sa), add_woc(sb)
+            ra, rb = wa[wa.CALWEEK == calweek], wb[wb.CALWEEK == calweek]
+            if ra.empty or rb.empty:
                 continue
-            delta = wb.woc - wa.woc
-            if wa.colour != wb.colour or abs(delta) >= min_move_weeks:
-                rows.append({"material": m, "location": loc, "woc_a": round(wa.woc, 1), "woc_b": round(wb.woc, 1),
-                             "delta_weeks": round(delta, 1), "colour_a": wa.colour, "colour_b": wb.colour,
-                             "demand_change": round(wb.avg_fwd_demand - wa.avg_fwd_demand),
-                             "stock_change": int(wb.STOCK_PLANNED - wa.STOCK_PLANNED)})
-    return pd.DataFrame(rows)
+            ra, rb = ra.iloc[0], rb.iloc[0]
+            if ra.woc is None or rb.woc is None or not ra.avg_fwd_demand > 0:
+                continue
+            delta = rb.woc - ra.woc
+            if colour(ra.woc) != colour(rb.woc) or abs(delta) >= min_move_weeks:
+                stock_effect = (rb.STOCK_PLANNED - ra.STOCK_PLANNED) / ra.avg_fwd_demand
+                demand_effect = delta - stock_effect
+                driver = (("projected stock up" if stock_effect > 0 else "projected stock down")
+                          if abs(stock_effect) >= abs(demand_effect) else
+                          ("forward demand down" if demand_effect > 0 else "forward demand up"))
+                rows.append({"material": m, "location": loc, "calweek": calweek,
+                             "woc_a": round(ra.woc, 1), "woc_b": round(rb.woc, 1), "delta_weeks": round(delta, 1),
+                             "colour_a": colour(ra.woc), "colour_b": colour(rb.woc),
+                             "stock_a": int(ra.STOCK_PLANNED), "stock_b": int(rb.STOCK_PLANNED),
+                             "demand_a": round(ra.avg_fwd_demand), "demand_b": round(rb.avg_fwd_demand),
+                             "driver": driver})
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    sev = {"red": 0, "yellow": 1, "green": 2, "blue": 3, "n/a": 4}
+    df["_sev"] = df.colour_b.map(sev)
+    df = df.sort_values(["_sev", "woc_b", "delta_weeks"]).drop(columns="_sev").reset_index(drop=True)
+    df.insert(0, "rank", range(1, len(df) + 1))
+    return df
 
 
 def reconciliation(plan=None, weeks=8, tolerance=0.25) -> pd.DataFrame:
@@ -59,15 +84,46 @@ def reconciliation(plan=None, weeks=8, tolerance=0.25) -> pd.DataFrame:
     return g.reset_index().rename(columns={"MATERIAL": "material", "FORECAST": "forecast", "TOTAL_DEMAND": "total_demand"})
 
 
-def diff_snapshots(snapshot_a, snapshot_b, materials=None, min_move_weeks=1.0, plan_a=None, plan_b=None) -> dict:
-    """snapshot_a/b: dates. Kinaxis mode when two plan frames are given, else inventory fallback."""
+def _snapshot(snaps, date):
+    d = pd.Timestamp(date)
+    x = snaps[snaps.snapshot_date == d]
+    return None if x.empty else x
+
+
+def diff_snapshots(snapshot_a, snapshot_b, materials=None, min_move_weeks=1.0, plan_a=None, plan_b=None,
+                   mode="auto", top_n=10) -> dict:
+    """S5. snapshot_a/b are dates. Kinaxis mode diffs two weekly plan snapshots (plan_a/plan_b, or
+    the loaded weekly snapshots); the inventory fallback diffs SAP on-hand between two dates."""
+    rows_used = []
+    if plan_a is None and mode in ("auto", "kinaxis"):
+        try:
+            snaps = adapter.kinaxis_snapshots()
+            plan_a, plan_b = _snapshot(snaps, snapshot_a), _snapshot(snaps, snapshot_b)
+        except FileNotFoundError:
+            plan_a = plan_b = None
     if plan_a is not None and plan_b is not None:
+        if materials:
+            materials = [str(m) for m in materials]
         df = kinaxis_diff(plan_a, plan_b, materials, min_move_weeks)
+        total = len(df)
         if not df.empty:
-            df = df.sort_values("woc_b").head(10)            # digest cap: top 10
+            df = df.head(top_n)                                 # digest cap, already in risk order
+            for f in (plan_a, plan_b):
+                if "_row" in f.columns and "_file" in f.columns:
+                    hit = f[f.MATERIAL.isin(df.material) & f.CALWEEK.isin(df.calweek)]
+                    rows_used += [{"source_file": r["_file"], "source_sheet": r.get("_sheet"),
+                                   "source_row": int(r["_row"]), "hash": None} for r in hit.head(100).to_dict("records")]
         msg = [] if not df.empty else ["No WoC colour changes or moves over 1 week between the two snapshots."]
-        return envelope("diff_snapshots", values={"mode": "kinaxis", "changes": len(df)},
-                        table=table(df), warnings=msg)
+        rec = reconciliation(plan_b) if "FORECAST" in plan_b.columns else pd.DataFrame(columns=["material"])
+        if materials:
+            rec = rec[rec.material.isin(materials)]
+        return envelope("diff_snapshots", values={
+            "mode": "kinaxis", "changes": len(df), "changes_total": total,
+            "date_a": str(pd.Timestamp(snapshot_a).date()) if snapshot_a not in (None, "x") else None,
+            "date_b": str(pd.Timestamp(snapshot_b).date()) if snapshot_b not in (None, "y") else None,
+            "calweek": int(df.calweek.iloc[0]) if not df.empty else None,
+            "reconciliation": rec.to_dict("records")},
+            table=table(df), rows_used=rows_used, warnings=msg)
     df, da, db = inventory_diff(snapshot_a, snapshot_b, materials)
     if df.empty:
         return envelope("diff_snapshots", "no_data", values={"mode": "inventory_fallback"},

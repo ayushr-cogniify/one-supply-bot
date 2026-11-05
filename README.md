@@ -122,13 +122,46 @@ Rushi, not a code bug.
 The workbooks are not in the repository, so the golden suites skip on GitHub Actions and the logic
 tests still run. Run `scripts/test_all.sh` locally before you push.
 
-## Connecting Claude later
+## Claude (question understanding)
 
-`osb_agent/models.py` holds the routing table from MVP doc §9. To connect a model:
+The `supabase/functions/osb-nlu` Edge Function runs Claude Haiku 5.5. It handles the scope gate and
+slot extraction from Prompts v2, sections 2 and 3, in one call with a strict JSON schema.
 
-1. Replace `scope_and_slots(text)` with a Claude Haiku call that returns the same dict:
-   `label`, `confidence`, `reason` and `slots`. The prompts are in Engineering appendix A.2 and A.3.
-2. Set `CONNECTED = True`.
+- **The key** is the Supabase secret `ANTHROPIC_API_KEY`. It never reaches the browser.
+- **Callers** must be signed-in users.
+- **Fallback:** the browser calls the function with an 8-second timeout. Any failure falls back to
+  the rules engine (`osb_agent/nlu.py`).
+- **What Claude never does:**
+  - see Reckitt data;
+  - produce an item code, a Kinaxis week or a number;
+  - map a line name to a work centre.
 
-The scenarios, tools, templates and validator do not change. Keep the API key on a server, such as a
-small proxy or the Databricks AI Gateway. Never put it in the browser bundle.
+  Code does all of those (`osb_agent/models.py` → `from_claude`).
+- **Deploy** through the Management API (no CLI needed):
+
+  ```bash
+  curl -X POST "https://api.supabase.com/v1/projects/<ref>/functions/deploy?slug=osb-nlu" \
+    -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+    -F 'metadata={"entrypoint_path":"index.ts","name":"osb-nlu","verify_jwt":true};type=application/json' \
+    -F file=@supabase/functions/osb-nlu/index.ts -F file=@supabase/functions/osb-nlu/prompt.ts
+  ```
+
+- **Live tests** (a few cents per run):
+
+  ```bash
+  OSB_LIVE_CLAUDE=1 OSB_DATA_DIR=... .venv/bin/python -m pytest engine/tests/test_claude_live.py
+  ```
+
+Narratives are still drafted by code from tool values, and the numeric validator checks them.
+Moving the drafting step to Sonnet 5.5 (Prompts v2, section 1) is the next model step.
+
+## Weekly Kinaxis snapshots (S5)
+
+```bash
+.venv/bin/python scripts/extract_snapshots.py --src ~/Downloads/reckitt-data   # about 90 s, once per new file
+```
+
+The script reads the 1.4M-row snapshots workbook into `.cache/`. The data build then ships the last
+five weekly loads. S5 compares the same plan week across two loads, ranks the moves by risk and names
+the driver of each. The main Kinaxis extract is a mid-week (10/23) load, so S5 compares snapshots from
+the snapshots file only, never across the two sources.

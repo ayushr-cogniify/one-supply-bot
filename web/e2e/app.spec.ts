@@ -67,7 +67,8 @@ test("S4: decision tree asks pacing, proposes C0 and records the approval", asyn
   await lastBot(page).getByRole("button", { name: "No", exact: true }).click();
   await expect(card).toContainText("Proposed code C0");
   await lastBot(page).getByRole("button", { name: "Approve" }).click();
-  await expect(lastBot(page)).toContainText("Approvals sheet");
+  await expect(lastBot(page)).toContainText("Reason code C0 recorded");
+  await expect(lastBot(page)).toContainText("Nothing was sent to SAP");
   await expect(page.locator(".rail")).toContainText("1 this session");
 });
 
@@ -93,6 +94,25 @@ test("typed questions: PIR and S5", async ({ page }) => {
   await expect(page.locator('[data-card="PIR"]')).toContainText("Projected inventory report");
   await page.getByLabel("Message").fill("What changed since last week?");
   await page.getByLabel("Message").press("Enter");
-  await lastBot(page).getByRole("button", { name: "Compare SAP stock between two dates" }).click();
-  await expect(page.locator('[data-card="S5"]')).toContainText("Inventory fallback");
+  await expect(page.locator('[data-card="S5"]').first()).toContainText("Weekly digest, ranked by risk");
+});
+
+test("Claude understands loose wording (live osb-nlu)", async ({ page }) => {
+  await ready(page);
+  await page.getByLabel("Message").fill("walmart wants another 5k of the 4x90 odor into vegas for week of oct 19 - are we ok?");
+  await page.getByLabel("Message").press("Enter");
+  const card = page.locator('[data-card="S1"]');
+  await expect(card).toContainText("Do not support without a replan");
+  await expect(page.locator(".rail")).toContainText("Claude Haiku 5.5");
+  await card.getByRole("button", { name: "Open trace" }).click();
+  await expect(page.getByRole("dialog")).toContainText("claude-haiku-5-5");
+});
+
+test("S5: ranked Kinaxis digest", async ({ page }) => {
+  await ready(page);
+  await page.getByLabel("Message").fill("What moved since last week?");
+  await page.getByLabel("Message").press("Enter");
+  const card = page.locator('[data-card="S5"]');
+  await expect(card).toContainText("Weekly digest, ranked by risk");
+  await expect(card).toContainText("Main driver");
 });

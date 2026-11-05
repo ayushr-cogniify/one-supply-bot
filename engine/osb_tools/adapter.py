@@ -185,3 +185,14 @@ def storyline(sheet: str = "Hygiene Storyline") -> pd.DataFrame:
                      "quality_hold": r[10], "factory_adherence": r[11], "expected_code": r[12],
                      "_file": path.name, "_sheet": sheet, "_row": i})
     return pd.DataFrame(rows)
+
+
+def kinaxis_snapshots() -> pd.DataFrame:
+    """Weekly Monday loads of the Kinaxis plan for the four LCs, from the 'Kinaxis Supply and Demand
+    Snapshots' workbook (1.4M rows; extracted once by scripts/extract_snapshots.py)."""
+    path = config.CACHE_DIR / "kinaxis_snapshots.pkl"
+    if not path.exists():
+        raise FileNotFoundError("Kinaxis snapshots not extracted: run scripts/extract_snapshots.py")
+    df = pd.read_pickle(path)
+    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
+    return df

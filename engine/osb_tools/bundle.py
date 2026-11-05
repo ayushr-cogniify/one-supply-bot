@@ -35,6 +35,7 @@ KEEP = {
     "reason_codes": None,
     "storyline": None,
     "pfr_lines": None,
+    "kinaxis_snapshots": None,
 }
 
 _FRAMES: dict = {}
@@ -69,7 +70,16 @@ def _sources():
         "reason_codes": adapter.reason_codes,
         "storyline": lambda: adapter.storyline("Hygiene Storyline"),
         "pfr_lines": lambda: cuts.pfr_lines()[lambda d: d["BSG Group"].isin(["Lysol LDS", "Lysol Sanitizers"])],
+        "kinaxis_snapshots": _recent_snapshots,
     }
+
+
+def _recent_snapshots(n=5):
+    df = adapter.kinaxis_snapshots()
+    keep = sorted(df.snapshot_date.unique())[-n:]
+    cols = ["MATERIAL", "LOCATION", "CALWEEK", "STOCK_PLANNED", "TOTAL_DEMAND", "TOTAL_SUPPLY", "FORECAST",
+            "snapshot_date", "_file", "_sheet", "_row"]
+    return df[df.snapshot_date.isin(keep)][cols]
 
 
 def export(out_dir, load_report: dict = None) -> dict:
@@ -78,7 +88,10 @@ def export(out_dir, load_report: dict = None) -> dict:
     manifest = {"created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "frames": {},
                 "load_report": load_report or {}}
     for name, fn in _sources().items():
-        df = fn().reset_index(drop=True)
+        try:
+            df = fn().reset_index(drop=True)
+        except FileNotFoundError:                       # optional extracts (weekly snapshots)
+            continue
         keep = KEEP[name]
         if keep is not None:
             df = df[[c for c in keep if c in df.columns] + [c for c in CITE if c in df.columns]]
@@ -141,6 +154,13 @@ def _install():
     adapter.transport = lambda: _FRAMES["transport"]
     adapter.reason_codes = lambda: _FRAMES["reason_codes"]
     adapter.storyline = lambda sheet="Hygiene Storyline": _FRAMES["storyline"]
+    if "kinaxis_snapshots" in _FRAMES:
+        _FRAMES["kinaxis_snapshots"]["CALWEEK"] = _FRAMES["kinaxis_snapshots"]["CALWEEK"].astype("int64")
+        adapter.kinaxis_snapshots = lambda: _FRAMES["kinaxis_snapshots"]
+    else:
+        def _none():
+            raise FileNotFoundError("No weekly Kinaxis snapshots in this bundle")
+        adapter.kinaxis_snapshots = _none
     cuts.pfr_lines = lambda: _FRAMES["pfr_lines"]
 
 

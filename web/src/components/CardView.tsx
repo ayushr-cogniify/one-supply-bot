@@ -32,7 +32,7 @@ function Cell({ col, row }: { col: Column; row: Record<string, unknown> }) {
     case "pct1":
       return <>{Number(v).toFixed(1)}%</>;
     case "woc":
-      return <Woc v={v as number} c={row.colour as string} />;
+      return <Woc v={v as number} c={row[col.colour_key ?? "colour"] as string} />;
     case "share":
       return (
         <span className="sharebar">

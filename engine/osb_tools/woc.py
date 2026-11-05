@@ -76,13 +76,26 @@ def _envelope(tool, status="ok", values=None, table=None, rows_used=None, warnin
             "missing": missing or [], "warnings": warnings or []}
 
 
-def simulate_demand_change(material: str, scope: str, week: int, delta_cases: int,
-                           weeks: int = 4, plan: pd.DataFrame = None) -> dict:
-    """S1: WoC before/after a demand change at one LC, with every LC and the network shown."""
+def simulate_demand_change(material: str, scope: str, week: int, delta_cases: int = None,
+                           weeks: int = 4, plan: pd.DataFrame = None, delta_pct: float = None) -> dict:
+    """S1: WoC before/after a demand change at one LC, with every LC and the network shown.
+    The change is either signed cases, or delta_pct of the item's total demand at that LC in that
+    week; the tool does the conversion (the model never does) and returns the cases it used."""
     plan = adapter.kinaxis_plan() if plan is None else plan
     if scope not in config.LCS:
         return _envelope("simulate_demand_change", "needs_input",
                          missing=[{"key": "scope", "template": "CLARIFY_SCOPE"}])
+    base_demand = None
+    if delta_cases is None:
+        if delta_pct is None:
+            return _envelope("simulate_demand_change", "needs_input", missing=[{"key": "delta_cases"}])
+        s0 = series(plan, material, scope)
+        hit = s0[s0.CALWEEK == week]
+        if hit.empty:
+            return _envelope("simulate_demand_change", "no_data",
+                             missing=[{"key": "material", "id": material, "template": "NO_DATA_ITEM"}])
+        base_demand = float(hit.TOTAL_DEMAND.iloc[0])
+        delta_cases = int(round(base_demand * delta_pct / 100))
     out, rows_used = [], []
     lcs = {}
     for loc in config.LCS:
@@ -119,6 +132,8 @@ def simulate_demand_change(material: str, scope: str, week: int, delta_cases: in
                else "support_with_replan" if flagged or "yellow" in net_after else "support")
     return _envelope("simulate_demand_change",
                      values={"material": str(material), "scope": scope, "week": week,
-                             "delta_cases": delta_cases, "verdict": verdict, "flagged_locations": flagged},
+                             "delta_cases": delta_cases, "delta_pct": delta_pct,
+                             "base_demand_cases": None if base_demand is None else int(round(base_demand)),
+                             "verdict": verdict, "flagged_locations": flagged},
                      table={"columns": list(df.columns), "rows": df.values.tolist()},
                      rows_used=rows_used)

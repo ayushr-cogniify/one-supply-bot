@@ -53,9 +53,10 @@ TOOLS = {
         "material": MAT, "locations": {"type": "array", "items": {"type": "string", "enum": LC_ENUM + ["NETWORK"]}},
         "weeks": {"type": "integer", "maximum": 26}}}),
     "simulate_demand_change": (simulate_demand_change, {"type": "object",
-        "required": ["material", "scope", "week", "delta_cases"], "properties": {
+        "required": ["material", "scope", "week"], "properties": {
         "material": MAT, "scope": {"type": "string", "enum": LC_ENUM + ["NETWORK"]},
-        "week": {"type": "integer"}, "delta_cases": {"type": "integer"}}}),
+        "week": {"type": "integer"}, "delta_cases": {"type": "integer"},
+        "delta_pct": {"type": "number", "description": "Change as % of the item's total demand at the LC that week"}}}),
     "get_attainment": (get_attainment, {"type": "object", "required": ["work_center"], "properties": {
         "work_center": {"type": "string"}, "months": {"type": "integer", "maximum": 22}}}),
     "simulate_attainment": (simulate_attainment, {"type": "object", "required": ["work_center", "attainment_pct"],

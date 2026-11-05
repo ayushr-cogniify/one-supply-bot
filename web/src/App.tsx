@@ -3,6 +3,7 @@ import type { Session as AuthSession } from "@supabase/supabase-js";
 import { ask, boot, runChecks } from "./engine";
 import { dataSource, linkError, linkType, supabase } from "./auth";
 import SignIn from "./components/SignIn";
+import { understand } from "./claude";
 import type { Action, BootInfo, Card, Gap, Message, Reply, Session, Trace } from "./types";
 import CardView from "./components/CardView";
 import Left from "./components/Left";
@@ -177,9 +178,12 @@ function Planner({ auth }: { auth: AuthSession }) {
     }
   };
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
+    if (!session || !info) return;
     setMessages((m) => [...m, { kind: "user", text, options: [] }]);
-    run({ type: "message", text }, text);
+    setBusy(true);
+    const parse = await understand(text, session, info.snapshot_start);
+    run({ type: "message", text, parse }, text);
   };
 
   const onAction = (a: Action, label: string, index: number) => {

@@ -123,7 +123,9 @@ def s1(card_id, material, desc, lc, week, delta, sim, lanes) -> dict:
     blocks = [
         {"type": "kv", "items": [
             {"label": "Item", "value": material, "sub": desc},
-            {"label": "Change", "value": f"{fmt_signed(delta)} cases", "sub": f"week {week} · {cx.week_label(week)}"},
+            {"label": "Change", "value": f"{fmt_signed(delta)} cases",
+             "sub": (f"{v['delta_pct']:+g}% of {fmt_int(v['base_demand_cases'])} cases demand \u00b7 " if v.get("delta_pct") is not None else "")
+                    + f"week {week} \u00b7 {cx.week_label(week)}"},
             {"label": "Lands at", "value": lc, "sub": cx.SITE_NAMES[lc]},
             {"label": "Basis", "value": "Planned", "sub": "6-week forward demand"}]},
         {"type": "banner", "tone": tone, "title": VERDICT[v["verdict"]],
@@ -147,8 +149,16 @@ def s1(card_id, material, desc, lc, week, delta, sim, lanes) -> dict:
         if lane_txt:
             narrative += f" Fastest lane in: {lane_txt[0]}."
     card = {"id": card_id, "scenario": "S1", "status": "ok",
-            "subtitle": f"{material} {desc or ''} · {fmt_signed(delta)} cases at {lc} · week {week}",
+            "subtitle": f"{material} {desc or ''} \u00b7 {fmt_signed(delta)} cases at {lc} \u00b7 week {week}",
             "blocks": blocks}
+    if v["verdict"] != "support" and tgt:
+        reds = [str(r["calweek"]) for r in tgt if r["colour_after"] == "red"]
+        card["replan"] = {"scenario": "S1", "text": (
+            f"Replan request: {fmt_signed(delta)} cases of {material} {desc or ''} at {lc} in week {week}. "
+            f"{lc} weeks of cover goes from {tgt[0]['woc_before']} to {tgt[0]['woc_after']}"
+            + (f" and is red in weeks {', '.join(reds)}" if reds else "") + ". "
+            + (f"Fastest inbound lane: {lane_txt[0]}. " if lane_txt else "")
+            + "Please confirm whether the plan can be replanned to cover this.")}
     return finish(card, [sim] + lanes, narrative)
 
 
@@ -228,7 +238,12 @@ def s2(card_id, wc, pct, att_res, sim) -> dict:
                  f"over the weeks shown. Trailing 3-month attainment is {av['trailing_avg_pct']}%. ")
     narrative += (f"SKUs that turn red: {', '.join(below)}." if below else "No SKU turns red at network level.")
     card = {"id": card_id, "scenario": "S2", "status": "ok",
-            "subtitle": f"{cx.wc_label(wc)} · {pct:g}% attainment · network level", "blocks": blocks}
+            "subtitle": f"{cx.wc_label(wc)} \u00b7 {pct:g}% attainment \u00b7 network level", "blocks": blocks}
+    if below:
+        card["replan"] = {"scenario": "S2", "text": (
+            f"Constraint call / replan request for {wc}: at {pct:g}% attainment the line loses "
+            f"{fmt_int(sv['production_shortfall_cases'])} cases of production over the next {len(weeks)} weeks and "
+            f"{', '.join(below)} fall below 2 weeks of network cover. Please confirm the replan for these SKUs.")}
     return finish(card, [att_res, sim], narrative)
 
 
@@ -386,9 +401,15 @@ def s4_tree(card_id, cut: dict, tree: dict, extra=()) -> dict:
                      "result_label": label, "evidence": _evidence(p, cut, lc)})
     code = v["proposed_code"]
     if code:
+        notes = []
+        if v.get("alternate_code"):
+            notes.append(f"Alternate: {v['alternate_code']} (next rule that passes, {v['alternate_rule']})")
+        if v.get("recovery_week"):
+            notes.append(f"Recovery: {lc} cover back to 2 weeks or more in week {v['recovery_week']} "
+                         f"({cx.week_label(v['recovery_week'])})")
         banner = {"type": "banner", "tone": "good", "title": f"Proposed code {code}: {v['long_description'] or ''}".strip(),
-                  "text": f"Confidence {v['confidence']}. The first rule that passes sets the code. "
-                          "Nothing is written to SAP until you approve."}
+                  "text": " \u00b7 ".join(notes + [f"Confidence {v['confidence']}. Approving records the code; "
+                                                    "nothing is written to SAP."])}
     else:
         unknown = [r for r in rows if r["result"] == "unknown"]
         banner = {"type": "banner", "tone": "warn",
@@ -418,6 +439,10 @@ def s4_tree(card_id, cut: dict, tree: dict, extra=()) -> dict:
         narrative = f"Proposed code {code} for the {cut['cut_date']} cut of {cut['material']} at {lc}. "
         if decisive:
             narrative += f"{decisive['rule_id']} decides it: {_evidence(decisive, cut, lc)}."
+        if v.get("alternate_code"):
+            narrative += f" Alternate code: {v['alternate_code']}."
+        if v.get("recovery_week"):
+            narrative += f" {lc} cover is back to 2 weeks or more in week {v['recovery_week']}."
     card = {"id": card_id, "scenario": "S4", "status": "ok" if code else "needs_input",
             "subtitle": f"{cut['material']} {cut.get('description') or ''} · {lc} · cut {cut['cut_date']}",
             "blocks": blocks, "proposed_code": code}
@@ -509,6 +534,55 @@ def s5(card_id, scope_label, diff, plans) -> dict:
     card = {"id": card_id, "scenario": "S5", "status": "ok", "subtitle": f"{scope_label} · SAP stock {v['date_a']} to {v['date_b']}",
             "blocks": blocks}
     return finish(card, [diff] + plans, narrative)
+
+
+def s5_kinaxis(card_id, scope_label, diff) -> dict:
+    v = diff["values"]
+    rows = rows_of(diff)
+    for r in rows:
+        r["description"] = cx.item_desc(r["material"]) or ""
+    reds = [r for r in rows if r["colour_b"] == "red" and r["colour_a"] != "red"]
+    wk = v.get("calweek")
+    blocks = [
+        {"type": "kv", "items": [
+            {"label": "Compared", "value": f"{v['date_a']} \u2192 {v['date_b']}", "sub": "Kinaxis weekly loads"},
+            {"label": "Plan week", "value": str(wk) if wk else "\u2013", "sub": cx.week_label(wk) if wk else ""},
+            {"label": "Moves found", "value": fmt_int(v["changes_total"]), "sub": "colour change or 1 week or more"},
+            {"label": "Scope", "value": scope_label, "sub": "LCs and network"}]},
+        {"type": "banner", "tone": "bad" if reds else "info",
+         "title": (f"{len(reds)} of the top {len(rows)} moves turned red" if reds else
+                   "Top moves this week" if rows else "No WoC colour changes or moves over 1 week"),
+         "text": "Ranked by risk: red first, then lowest weeks of cover. Each move shows its main driver."},
+        {"type": "table", "title": "Weekly digest, ranked by risk",
+         "columns": [{"key": "rank", "label": "#"}, {"key": "material", "label": "Item"},
+                     {"key": "description", "label": "Description"}, {"key": "location", "label": "LC"},
+                     {"key": "woc_a", "label": f"WoC {v['date_a'][5:]}", "format": "woc", "colour_key": "colour_a"},
+                     {"key": "woc_b", "label": f"WoC {v['date_b'][5:]}", "format": "woc", "colour_key": "colour_b"},
+                     {"key": "driver", "label": "Main driver"},
+                     {"key": "stock_a", "label": "Stock before", "format": "int"},
+                     {"key": "stock_b", "label": "Stock after", "format": "int"},
+                     {"key": "demand_b", "label": "Fwd demand", "format": "int"}],
+         "rows": rows,
+         "note": "WoC for the same plan week in both loads. Driver: the larger of the stock effect (projected stock "
+                 "changed, demand held) and the demand effect (6-week forward demand changed, stock held). Cases."},
+    ]
+    rec = v.get("reconciliation", [])
+    if rec:
+        blocks.append({"type": "table", "title": "Demand does not reconcile with its components", "tone": "warn",
+                       "columns": [{"key": "material", "label": "Item"}, {"key": "forecast", "label": "8-week forecast", "format": "int"},
+                                   {"key": "total_demand", "label": "8-week total demand", "format": "int"}],
+                       "rows": rec[:10],
+                       "note": "Forecast and total demand differ by more than 25% over the next 8 weeks in the newer load. "
+                               "Confirm the demand components with Rushi."})
+    narrative = None
+    if rows:
+        top = rows[0]
+        narrative = (f"Between the {v['date_a']} and {v['date_b']} Kinaxis loads, {fmt_int(v['changes_total'])} item and LC "
+                     f"positions moved for week {wk}. Top risk: {top['material']} at {top['location']}, from "
+                     f"{top['woc_a']} to {top['woc_b']} weeks of cover ({top['driver']}).")
+    card = {"id": card_id, "scenario": "S5", "status": "ok",
+            "subtitle": f"{scope_label} \u00b7 Kinaxis {v['date_a']} vs {v['date_b']} \u00b7 week {wk}", "blocks": blocks}
+    return finish(card, [diff], narrative)
 
 
 # ---------- PIR ----------

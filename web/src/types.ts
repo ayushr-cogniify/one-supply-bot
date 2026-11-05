@@ -1,7 +1,8 @@
 export type Tone = "good" | "warn" | "bad" | "info" | "muted" | null | undefined;
 
 export interface Action {
-  type: "option" | "approve" | "reject" | "alternate" | "open_gap" | "focus";
+  type: "option" | "approve" | "reject" | "alternate" | "open_gap" | "focus" | "draft";
+  kind?: string;
   slot?: string;
   value?: unknown;
   label?: string;
@@ -32,6 +33,7 @@ export interface Column {
   label: string;
   format?: string;
   strong?: boolean;
+  colour_key?: string;
 }
 
 export interface WocCell {
@@ -138,6 +140,7 @@ export interface Session {
 
 export interface BootInfo {
   snapshot: string;
+  snapshot_start: string;
   stock_to: string;
   lcs: { code: string; name: string }[];
   load_report: {

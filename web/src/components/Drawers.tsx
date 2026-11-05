@@ -185,7 +185,7 @@ export function AdminDrawer({ info, session, onClose, onChecks, onReset, onRetra
             <thead><tr><th>Stage</th><th>PRD model</th><th>Endpoint</th><th>Running now</th></tr></thead>
             <tbody>{info.models.map((m) => <tr key={m.stage}><td>{m.stage}</td><td>{m.model}</td><td className="n" style={{ fontSize: 12 }}>{m.endpoint}</td><td>{m.running}</td></tr>)}</tbody>
           </table>
-          <p className="muted" style={{ fontSize: 12.5 }}>No model is connected in this build. The scope gate and slot extraction run on deterministic rules, and narratives are drafted from tool values. Every number comes from the calculation engines either way, and the numeric validator checks every narrative before it is shown.</p>
+          <p className="muted" style={{ fontSize: 12.5 }}>Claude Haiku 5.5 reads each question (scope and request details) through the osb-nlu function; the API key stays server-side and only signed-in users can call it. If Claude is slow or unavailable the rules engine takes over. Claude never sees Reckitt data and never produces a number: items are resolved by the item tool, weeks are converted by code, every number comes from the calculation engines, and the numeric validator checks every narrative before it is shown.</p>
           <h3 style={{ fontSize: 14, margin: "18px 0 6px" }}>Rules</h3>
           <dl className="kvl">
             <dt>WoC</dt><dd>Projected stock in week w / mean total demand of weeks w+1 to w+6</dd>

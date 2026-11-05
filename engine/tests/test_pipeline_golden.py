@@ -96,7 +96,7 @@ def test_s1_network_needs_one_lc(chat):
 def test_s1_full_request_needs_no_question(chat):
     chat.say("+5,000 cases of 3283407 at Vegas week of 10/19")
     c = chat.card()
-    assert not [m for m in chat.last["messages"] if m["options"]]
+    assert not [o for m in chat.last["messages"] for o in m["options"] if o["action"]["type"] == "option"]
     assert grid_cell(c, "USQ4", 1)["after"] == 1.5
 
 
@@ -121,7 +121,8 @@ def test_question_cap(chat):
     chat.say("+5,000")
     assert "CLARIFY_WEEK" in chat.templates()            # question 3: which week
     chat.pick(202643, "calweek")
-    assert chat.templates() == ["QUESTION_CAP"]          # a fourth question is not asked
+    assert chat.templates() == ["TOO_MANY_QUESTIONS"]    # a fourth question is not asked
+    assert "the LC" in chat.last["messages"][0]["text"]  # it lists what is still needed
     assert chat.session["pending"] is None and not chat.last["cards"]
 
 
@@ -182,6 +183,7 @@ def test_s4_cut_asks_pacing_then_proposes_c0_and_approves(chat):
     draft = next(o["action"] for m in chat.last["messages"] for o in m["options"] if o["action"]["type"] == "approve")
     chat.send(draft)
     assert chat.session["approvals"] == 1 and chat.session["supplements"]["Approvals"][0]["decision"] == "approved"
+    assert "Reason code C0 recorded" in chat.last["messages"][0]["text"]
     assert len(chat.session["supplements"]["Pacing"]) == 2
 
 
@@ -226,18 +228,31 @@ def test_s4_pareto(chat):
 
 
 # ---------- S5 ----------
-def test_s5_offers_fallback(chat):
+def test_s5_kinaxis_digest_then_stock(chat):
     chat.say("What changed since last week?")
-    assert chat.templates() == ["NO_SECOND_SNAPSHOT"]
-    chat.pick("inventory", "s5_mode")
     c = chat.card()
-    assert c["scenario"] == "S5" and c["validator"]["passed"]
+    rows = block(c, "table")[0]["rows"]
+    assert c["scenario"] == "S5" and 0 < len(rows) <= 10
+    assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))       # tool's risk order, not re-ranked
+    sev = {"red": 0, "yellow": 1, "green": 2, "blue": 3}
+    assert [sev[r["colour_b"]] for r in rows] == sorted(sev[r["colour_b"]] for r in rows)
+    assert all(r["driver"] for r in rows)
+    chat.pick("inventory", "s5_mode")                    # SAP stock fallback still on offer
+    assert chat.card()["scenario"] == "S5"
+
+
+def test_s5_since_a_date(chat):
+    chat.say("What changed since 10/12?")
+    kv = {i["label"]: i["value"] for i in block(chat.card(), "kv")[0]["items"]}
+    assert kv["Compared"].startswith("2026-10-12")
 
 
 def test_s5_pir_items(chat):
     chat.say("Review my PIR items")
     assert any(g["id"] == "pir_list" and g["state"] == "open" for g in chat.last["gaps"])
     chat.send({"type": "gap_submit", "gap": "pir_list", "values": {"items": "3283407"}})
+    assert chat.card()["subtitle"].startswith("PIR items (1)")
+    chat.pick("inventory", "s5_mode")
     c = chat.card()
     rows = {r["location"]: r["delta_cases"] for r in block(c, "table")[0]["rows"]}
     assert rows == {"USP6": -2063, "USP8": 11362, "USQ2": -8090, "USQ4": 3592}

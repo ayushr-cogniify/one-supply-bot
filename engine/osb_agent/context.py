@@ -71,6 +71,11 @@ def calweek_for(week: dict):
         return None
     if "calweek" in week:
         return week["calweek"] if week["calweek"] in set(c.CALWEEK) else None
+    if "week_number" in week:
+        # 'week 43' as the planner said it: the first plan week with that Kinaxis week number
+        n = int(week["week_number"])
+        hit = [w for w in c.CALWEEK if int(w) % 100 == n]
+        return int(hit[0]) if hit else None
     if "relative" in week:
         i = int(week["relative"])
         return int(c.CALWEEK.iloc[i]) if i < len(c) else None
@@ -148,3 +153,12 @@ def make_buy_lanes(materials: list) -> pd.DataFrame:
 def pfr_period_bounds():
     d = cuts.pfr_lines().cut_date.dropna()
     return d.min().date(), d.max().date()
+
+
+def snapshot_dates() -> list:
+    """Dates of the weekly Kinaxis loads available for S5 (empty when none were extracted)."""
+    try:
+        df = adapter.kinaxis_snapshots()
+    except FileNotFoundError:
+        return []
+    return sorted(pd.Timestamp(d).date() for d in df.snapshot_date.unique())

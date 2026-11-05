@@ -84,13 +84,19 @@ def handle(req: dict, session: dict) -> dict:
     kind = req.get("type", "message")
     try:
         if kind == "message":
-            _on_message(t, req.get("text", ""))
+            _on_message(t, req.get("text", ""), req.get("parse"))
         elif kind == "option":
             _on_option(t, req)
         elif kind == "gap_submit":
             _on_gap(t, req)
         elif kind in ("approve", "reject", "alternate"):
             _on_decision(t, req)
+        elif kind == "draft":
+            rp = session.get("last_replan")
+            if not rp:
+                t.say("There is no card with a replan need to draft from yet.")
+            else:
+                _draft(t, "replan request", rp["text"], replan=rp)
         elif kind == "retract":
             if sup.retract(session, req.get("sheet"), req.get("row_id")):
                 t.say(f"Retracted {req.get('row_id')} in the {req.get('sheet')} sheet. The row stays in the sheet, "
@@ -115,16 +121,24 @@ def _slim(r):
     return r
 
 
-def _on_message(t, text):
+def _on_message(t, text, external=None):
     s = t.s
     p = s.get("pending")
     if p and p.get("awaiting") and _fill_text(t, p, text):
         t.span("follow_up", awaiting=p["awaiting"], text=text)
         p["awaiting"] = None
         return _advance(t, p)
-    parse = models.scope_and_slots(text)
+    if re.search(r"\bdraft\b", text.lower()) and s.get("last_replan") and \
+            re.search(r"\breplan|\bconstraint|\brequest\b|\bcall\b", text.lower()):
+        t.span("draft_request", text=text)
+        return _draft(t, "replan request", s["last_replan"]["text"], replan=s["last_replan"])
+    parse = models.scope_and_slots(text, external)
     t.span("scope_gate", engine=parse["engine"], label=parse["label"], confidence=parse["confidence"],
-           reason=parse["reason"])
+           reason=parse["reason"], model_ms=parse.get("ms"))
+    if parse["label"] in ("FOLLOW_UP", "DATA_ENTRY"):
+        t.span("slots", engine=parse["engine"], slots=parse["slots"])
+        s["last_route"] = parse["engine"]
+        return _follow_or_entry(t, parse, text)
     t.span("slots", engine=parse["engine"], slots=parse["slots"])
     s["last_route"] = parse["engine"]
     if parse["label"] == "OUT_OF_SCOPE":
@@ -141,12 +155,46 @@ def _on_message(t, text):
     return _advance(t, p)
 
 
-def _follow_up(t, parse, text):
+def _follow_or_entry(t, parse, text):
+    """Claude labelled the message a continuation or a value. Answer the open question with it, offer
+    to save a stated line capacity, or rerun the last request with the details changed."""
+    s, sl = t.s, parse["slots"]
+    p = s.get("pending")
+    if p and p.get("awaiting"):
+        p["slots"].update({k: v for k, v in sl.items() if k != "out_of_scope_action"})
+        for k in ("lcs",):
+            if sl.get(k) and len(sl[k]) == 1:
+                p["r"]["lc"] = sl[k][0]
+        if sl.get("work_center"):
+            p["r"]["work_center"] = sl["work_center"]
+        p["awaiting"] = None
+        return _advance(t, p)
+    qu = sl.get("quantity_units")
+    if sl.get("work_center") and qu:
+        wc = sl["work_center"]
+        t.say(f"Save {wc} rated capacity as {cards.fmt_int(qu['value'])} {qu['unit']} per month in the Work_Centres "
+              "sheet? Nothing is saved until you confirm.",
+              options=[{"label": f"Save {wc} capacity", "primary": True,
+                        "action": {"type": "gap_submit", "gap": "rated_capacity", "values": {
+                            "work_center": wc, "rated_capacity_units_per_month": qu["value"],
+                            "unit_basis": "Bottles" if qu["unit"] == "bottles" else "Units"}}}])
+        return
+    if re.search(r"\bdraft\b", text.lower()) and s.get("last_replan"):
+        return _draft(t, "replan request", s["last_replan"]["text"], replan=s["last_replan"])
+    follow = _follow_up(t, {"label": "OUT_OF_SCOPE", "reason": "no scenario keyword"}, text, sl)
+    if follow:
+        return _advance(t, follow)
+    t.say(T["OUT_OF_SCOPE"], template="OUT_OF_SCOPE", options=[
+        {"label": o["label"], "action": {"type": "option", "slot": "scenario", "value": o["value"]}}
+        for o in SCENARIO_OPTIONS])
+
+
+def _follow_up(t, parse, text, slots=None):
     """'And at Atlanta?' after an S1 answer: reuse the last request, change what the message names."""
     last = t.s.get("last")
     if not last:
         return None
-    raw = nlu.parse("cases " + text).slots          # read slots without the scope gate
+    raw = slots if slots is not None else nlu.parse("cases " + text).slots   # read slots without the gate
     keys = {"lcs", "week", "delta_cases", "pct", "work_center"}
     if not (keys & set(raw)):
         return None
@@ -245,7 +293,8 @@ def _on_decision(t, req):
         s["approvals"] += 1
         sup.add(s, "Draft_Actions", {"draft_id": d["draft_id"], "action_type": d["action_type"],
                                      "rendered_text": d["text"], "status": "approved"})
-        t.say(render("APPROVED", action_type=d["action_type"].capitalize(), record_id=rec["approval_id"]), tone="good")
+        t.say(render("APPROVED", action_type=d["action_type"][:1].upper() + d["action_type"][1:],
+                     record_id=rec["approval_id"]), tone="good")
         t.span("approval", draft_id=d["draft_id"], decision="approved", record=rec["approval_id"])
     elif kind == "reject":
         d["status"] = "rejected"
@@ -277,11 +326,30 @@ def _draft(t, action_type, text, **extra):
 
 
 # ---------- clarification ----------
+SLOT_WORDS = {"item": "the item", "material": "which item", "qty": "the quantity in cases", "calweek": "the week",
+              "scope": "the LC", "lc": "the LC", "work_center": "the line", "pct": "the attainment %",
+              "segment": "the segment or size", "growth": "the growth %", "growth_choice": "one growth value",
+              "cut": "the item, LC and cut date", "pir_scope": "which items", "s5_mode": "which comparison"}
+
+
+def _still_needed(p, slot):
+    sl, r = p["slots"], p["r"]
+    need = [SLOT_WORDS.get(slot, slot)]
+    if p["scenario"] == "S1":
+        if "delta_cases" not in sl and "pct" not in sl and slot != "qty":
+            need.append(SLOT_WORDS["qty"])
+        if "calweek" not in r and slot != "calweek":
+            need.append(SLOT_WORDS["calweek"])
+        if "lc" not in r and slot not in ("scope", "lc"):
+            need.append(SLOT_WORDS["lc"])
+    return ", ".join(need[:-1]) + (" and " if len(need) > 1 else "") + need[-1]
+
+
 def _ask(t, p, slot, text, template=None, options=None, note=None, count=True):
     s = t.s
     if count and p["questions"] >= MAX_QUESTIONS:
         s["pending"] = None
-        t.say(T["QUESTION_CAP"], template="QUESTION_CAP")
+        t.say(render("TOO_MANY_QUESTIONS", missing_list=_still_needed(p, slot)), template="TOO_MANY_QUESTIONS")
         t.span("clarify_cap")
         return
     if count:
@@ -376,6 +444,15 @@ def _fill_text(t, p, text):
             return False
         _save_pacing(t, p, step, val)
         return True
+    if a == "growth_choice":
+        if "both" in low:
+            r["growth_choice"] = "both"
+        elif nlu.find_pct(low) is not None or num:
+            r["growth"] = nlu.find_pct(low) if nlu.find_pct(low) is not None else float(low.strip("% "))
+            r["growth_list"] = [r["growth"]]
+        else:
+            return False
+        return True
     if a == "pir_scope":
         if "lds" in low or "disinfect" in low:
             r["pir_scope"] = "Lysol LDS"
@@ -427,6 +504,20 @@ def _done(t, p, card):
                            "options": [], "note": None, "template": None, "tone": None})
     s["last"] = {"scenario": p["scenario"], "slots": p["slots"], "r": {k: v for k, v in p["r"].items()
                                                                         if isinstance(v, (str, int, float, dict, list))}}
+    replan = card.get("replan")
+    if replan:
+        s["last_replan"] = replan
+    action = p["slots"].get("out_of_scope_action")
+    if action:
+        offer = " I can draft a replan request for you to review instead." if replan else ""
+        t.say(render("PARTIAL_SCOPE", scenario=f"{card['tag']} {card['title'].lower()}", action=action,
+                     draft_offer=offer), template="PARTIAL_SCOPE",
+              options=[{"label": "Draft replan request", "action": {"type": "draft", "kind": "replan_request"}}]
+              if replan else [])
+        t.span("partial_scope", declined=action)
+    elif replan:
+        t.say("Want a replan request drafted from this card? Nothing is sent; approving only records it.",
+              options=[{"label": "Draft replan request", "action": {"type": "draft", "kind": "replan_request"}}])
 
 
 def _new_card_id(t, p):
@@ -469,7 +560,7 @@ def _s1(t, p):
         return
     m = r["material"]
     desc = cx.item_desc(m)
-    if sl.get("cover_query") and "delta_cases" not in sl:
+    if sl.get("cover_query") and "delta_cases" not in sl and "pct" not in sl:
         locs = sl["lcs"] if sl.get("lcs") else ["NETWORK"] + list(cx.SITE_NAMES)
         t.echo(f"Weeks of cover for {m} {desc} · {', '.join(locs)} · planned basis · "
                f"{t.s['weeks_shown']} weeks")
@@ -480,7 +571,7 @@ def _s1(t, p):
             return
         t.s["pending"] = None
         return _done(t, p, cards.s1_plan(_new_card_id(t, p), m, desc, res))
-    if "delta_cases" not in sl:
+    if "delta_cases" not in sl and "pct" not in sl:
         return _ask(t, p, "qty", T["CLARIFY_QTY"])
     if "calweek" not in r:
         cw = cx.calweek_for(sl.get("week"))
@@ -498,10 +589,14 @@ def _s1(t, p):
         else:
             return _ask(t, p, "scope", T["CLARIFY_SCOPE"], template="CLARIFY_SCOPE",
                         options=[{"label": "Network", "value": "NETWORK"}] + [{"label": lc, "value": lc} for lc in cx.SITE_NAMES])
-    lc, cw, delta = r["lc"], int(r["calweek"]), int(sl["delta_cases"])
-    t.echo(f"Demand change for {m} {desc} · {cards.fmt_signed(delta)} cases · {lc} {cx.SITE_NAMES[lc]} · "
+    lc, cw = r["lc"], int(r["calweek"])
+    if "delta_cases" in sl:
+        change, args = f"{cards.fmt_signed(int(sl['delta_cases']))} cases", {"delta_cases": int(sl["delta_cases"])}
+    else:   # a % of demand: the tool converts it to cases, never the model
+        change, args = f"{float(sl['pct']):+g}% of total demand in that week", {"delta_pct": float(sl["pct"])}
+    t.echo(f"Demand change for {m} {desc} · {change} · {lc} {cx.SITE_NAMES[lc]} · "
            f"week {cw} ({cx.week_label(cw)}) · planned basis")
-    sim = t.tool("simulate_demand_change", material=m, scope=lc, week=cw, delta_cases=delta)
+    sim = t.tool("simulate_demand_change", material=m, scope=lc, week=cw, **args)
     if sim["status"] != "ok":
         t.s["pending"] = None
         t.say(render("NO_DATA_ITEM", item_text=m), template="NO_DATA_ITEM")
@@ -513,12 +608,25 @@ def _s1(t, p):
             if ln["status"] == "ok":
                 lanes.append(ln)
     t.s["pending"] = None
-    _done(t, p, cards.s1(_new_card_id(t, p), m, desc, lc, cw, delta, sim, lanes))
+    _done(t, p, cards.s1(_new_card_id(t, p), m, desc, lc, cw, int(sim["values"]["delta_cases"]), sim, lanes))
 
 
 def _s2(t, p):
     sl, r = p["slots"], p["r"]
     known = set(adapter.attainment().work_center.dropna())
+    if "work_center" not in r and sl.get("line_name"):
+        alias = next((x for x in reversed(sup.live(t.s, "Work_Centres"))
+                      if str(x.get("alias") or "").strip().lower() == sl["line_name"].lower()), None)
+        if alias:
+            r["work_center"] = alias["work_center"]
+        else:
+            opts = []
+            for w in cx.active_lines(sl.get("factory")):
+                a = t.tool("get_attainment", work_center=w)
+                pct = a["values"].get("trailing_avg_pct")
+                opts.append({"label": f"{w} · trailing {pct}%" if pct is not None else w, "value": w})
+            return _ask(t, p, "work_center", render("UNKNOWN_LINE", name=sl["line_name"]), template="CLARIFY_LINE",
+                        options=opts, note="Line names map to work centres only through the alias table.")
     if "work_center" not in r:
         wc = sl.get("work_center")
         if wc and wc in known:
@@ -565,10 +673,19 @@ def _s3(t, p):
         groups = sorted({g for g in (cx.item_group(m) for m in mats0) if g})
         brand = sl.get("brand") or (groups[0] if len(groups) == 1 else "Lysol")
         r["label"] = f"{size:g} oz {brand}"
-    if "pct" not in sl and "growth" not in r:
+    if sl.get("pct_range") and "growth" not in r and "growth_list" not in r:
+        lo, hi = sl["pct_range"]
+        choice = r.get("growth_choice")
+        if choice is None:
+            return _ask(t, p, "growth_choice", render("CLARIFY_RANGE", low=lo, high=hi), template="CLARIFY_RANGE",
+                        options=[{"label": "Both ends", "value": "both"}, {"label": f"{lo:g}%", "value": "low"},
+                                 {"label": f"{hi:g}%", "value": "high"}])
+        r["growth_list"] = [lo, hi] if choice == "both" else [lo if choice == "low" else hi]
+    if "pct" not in sl and "growth" not in r and "growth_list" not in r:
         return _ask(t, p, "growth", T["CLARIFY_GROWTH"], template="CLARIFY_GROWTH",
                     options=[{"label": f"+{v}%", "value": v} for v in (15, 25, 35)])
-    growth = float(r.get("growth", sl.get("pct")))
+    growths = [float(g) for g in r.get("growth_list") or [r.get("growth", sl.get("pct"))]]
+    growth = max(growths)
     months = int(sl.get("months") or 6)
     mats = select_materials(r["selector"].get("consumer_size"))
     wc = r.get("work_center") or sl.get("work_center") or cx.line_for_materials(mats)
@@ -579,7 +696,8 @@ def _s3(t, p):
     r["work_center"] = wc
     cap = sup.latest(t.s, "Work_Centres", work_center=wc)
     if not p.get("echoed"):
-        t.echo(f"Capacity check for {r['label']} · growth {cards.fmt_signed(growth)}% · {months} months from "
+        t.echo(f"Capacity check for {r['label']} · growth "
+               f"{' and '.join(cards.fmt_signed(g) + '%' for g in growths)} · {months} months from "
                f"the snapshot · line {wc} · attainment: trailing 3 months · cases to units with CASETOEACH")
         p["echoed"] = True
     att = t.tool("get_attainment", work_center=wc)
@@ -601,8 +719,6 @@ def _s3(t, p):
               note=f"Trailing 3-month attainment on {wc} is {att['values']['trailing_avg_pct']}%. "
                    "I will not enter a capacity for you.")
         return
-    gap = t.tool("capacity_gap", selector=r["selector"], growth_pct=growth, months=months, work_center=wc,
-                 rated_capacity_units=float(cap["rated_capacity_units_per_month"]))
     lanes, seen = [], set()
     for row in cx.make_buy_lanes(mats).sort_values("LEADTIME DAYS").itertuples():
         key = (row.SOURCE_SITE, row.DESTINATION_SITE)
@@ -615,9 +731,13 @@ def _s3(t, p):
         if len(lanes) == 3:
             break
     t.s["pending"] = None
-    card = cards.s3(_new_card_id(t, p), r["label"], growth, wc, att, gap_res=gap, lanes=lanes,
-                    capacity={"value": float(cap["rated_capacity_units_per_month"]), "row": cap["row_id"]})
-    _done(t, p, card)
+    for i, g in enumerate(growths):     # one card per growth value (both ends of a range)
+        gap = t.tool("capacity_gap", selector=r["selector"], growth_pct=g, months=months, work_center=wc,
+                     rated_capacity_units=float(cap["rated_capacity_units_per_month"]))
+        cid = _new_card_id(t, p) if i == 0 else f"{_new_card_id(t, p)}-{i + 1}"
+        card = cards.s3(cid, r["label"], g, wc, att, gap_res=gap, lanes=lanes,
+                        capacity={"value": float(cap["rated_capacity_units_per_month"]), "row": cap["row_id"]})
+        _done(t, p, card)
 
 
 def _period(y, m):
@@ -718,7 +838,12 @@ def _s4(t, p):
     t.s["pending"] = None
     code = tree["values"].get("proposed_code")
     if code:
-        _draft(t, f"reason code {code}", f"Write SAP reason code {code} on the {cd} cut of {m} at {lc}.",
+        tv = tree["values"]
+        if tv.get("recovery_week") is None:
+            t.say(render("NO_DATA_RECOVERY", item=m, lc=lc, red_threshold=2, n=len(cx.cal())),
+                  template="NO_DATA_RECOVERY")
+        alt = f" Alternate: {tv['alternate_code']}." if tv.get("alternate_code") else ""
+        _draft(t, f"reason code {code}", f"Assign SAP reason code {code} to the {cd} cut of {m} at {lc}.{alt}",
                code=code, cut=r["cut_values"])
     elif "inventory_snapshot" in needs:
         t.say(f"There is no SAP inventory snapshot within 3 days before {cd} at {lc}, so the stock branch cannot be "
@@ -749,23 +874,23 @@ def _s4_pareto(t, p):
 
 def _s5(t, p):
     sl, r = p["slots"], p["r"]
-    mode = r.get("s5_mode") or ("pir" if sl.get("pir_items") else None)
+    snaps = cx.snapshot_dates()
+    pir = bool(sl.get("pir_items")) or r.get("s5_scope") == "pir"
+    mode = r.get("s5_mode") or ("kinaxis" if len(snaps) >= 2 else None)
     if mode is None:
         return _ask(t, p, "s5_mode", render("NO_SECOND_SNAPSHOT", snapshot_week=cx.snapshot_label()),
                     template="NO_SECOND_SNAPSHOT",
                     options=[{"label": "Compare SAP stock between two dates", "value": "inventory"},
                              {"label": "Upload a second Kinaxis extract", "value": "upload"}])
     if mode == "upload":
-        t.s["pending"] = None
+        t.s["pending"] = {**p, "awaiting": "s5_mode"}
         t.say("A second Kinaxis extract is checked against the schema contract and loaded by the data build, then "
-              "this view diffs the two snapshots. This build carries the " + cx.snapshot_label() + " snapshot only.",
+              "this view diffs the two snapshots.",
               options=[{"label": "Compare SAP stock between two dates",
                         "action": {"type": "option", "slot": "s5_mode", "value": "inventory"}}])
-        t.s["pending"] = {**p, "awaiting": "s5_mode"}
         return
-    mats = None
-    scope_label = "Every item"
-    if mode == "pir":
+    mats, scope_label = None, "Every item at the four LCs"
+    if pir:
         rows = sup.live(t.s, "PIR_List")
         if not rows:
             p["awaiting"] = "gap:pir_list"
@@ -777,18 +902,36 @@ def _s5(t, p):
             return
         mats = list(dict.fromkeys(x["item"] for x in rows))
         scope_label = f"PIR items ({len(mats)})"
+    if mode == "kinaxis":
+        b = snaps[-1]
+        a = snaps[-2]
+        if sl.get("date"):                       # 'what changed since 10/12'
+            want = cx.resolve_year(*sl["date"])
+            earlier = [d for d in snaps[:-1] if d <= want]
+            a = earlier[-1] if earlier else snaps[0]
+        t.echo(f"What changed \u00b7 {scope_label} \u00b7 Kinaxis weekly loads {a} vs {b} \u00b7 same plan week in "
+               "both \u00b7 ranked by risk, top 10")
+        diff = t.tool("diff_snapshots", snapshot_a=a.isoformat(), snapshot_b=b.isoformat(), materials=mats,
+                      mode="kinaxis")
+        t.s["pending"] = {**p, "awaiting": "s5_mode", "r": {**r, "s5_scope": "pir" if pir else None}}
+        _done(t, p, cards.s5_kinaxis(_new_card_id(t, p), scope_label, diff))
+        t.say("Want the SAP stock-on-hand movement for the same week too?",
+              options=[{"label": "Compare SAP stock between two dates",
+                        "action": {"type": "option", "slot": "s5_mode", "value": "inventory"}}])
+        return
     dates = cx.inventory_dates()
     b = dates[-1]
     a = b - timedelta(days=7)
-    t.echo(f"What changed · {scope_label} · SAP stock on hand {a} vs {b} · four LCs · "
-           "inventory fallback (one Kinaxis snapshot)")
-    diff = t.tool("diff_snapshots", snapshot_a=a.isoformat(), snapshot_b=b.isoformat(), materials=mats)
+    t.echo(f"What changed \u00b7 {scope_label} \u00b7 SAP stock on hand {a} vs {b} \u00b7 four LCs")
+    diff = t.tool("diff_snapshots", snapshot_a=a.isoformat(), snapshot_b=b.isoformat(), materials=mats,
+                  mode="inventory")
     if diff["status"] != "ok":
         t.s["pending"] = None
         t.say(render("NO_SECOND_SNAPSHOT", snapshot_week=cx.snapshot_label()), template="NO_SECOND_SNAPSHOT")
         return
     plans = [t.tool("get_plan", material=m, locations=["NETWORK"], weeks=1) for m in (mats or [])]
     t.s["pending"] = None
+    p = {**p, "card_id": None}
     _done(t, p, cards.s5(_new_card_id(t, p), scope_label, diff, plans))
 
 

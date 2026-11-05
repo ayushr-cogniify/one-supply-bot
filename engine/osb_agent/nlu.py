@@ -16,17 +16,21 @@ FACTORIES = {"USR2": r"\bst\.?\s*peters\b|\bsaint\s+peters\b|\bstp\b|\busr2\b",
              "USA2": r"\bbelle\s*mead\b|\busa2\b"}
 NETWORK = r"\bnetwork\b|\bnational(?:ly)?\b|\bwhole\s+us\b|\ball\s+(?:four\s+|4\s+)?lcs\b|\bacross\s+the\s+us\b"
 
-# Out of scope (appendix A.2 list). Checked before any scenario keyword.
+# Out of scope (appendix A.2 list, prompts v2). Checked before any scenario keyword.
+# The first block are actions: in a mixed request ("+5k at Vegas, and email the plant") the
+# scenario part is answered and the action is declined (PARTIAL_SCOPE). The rest refuse outright.
+ACTION_OOS = 7
 OOS = [
-    (r"\b(upload|load|push|send)\b.*\bforecast", "forecast upload"),
-    (r"\b(change|edit|adjust|update|raise|lower|increase|override)\b.*\bforecast\b", "forecast edit"),
-    (r"\bforecast\b.*\bby\s+-?\d+\s*%", "forecast edit"),
-    (r"\b(create|raise|book|make|set\s+up|schedule)\b.*\b(shuttle|sto|stock\s+transport|transfer\s+order)\b", "shuttle or STO"),
-    (r"\brebalanc", "rebalancing order"),
-    (r"\b(emo|cmo)\b|\bwork\s+order\b|\bpurchase\s+order\b|\braise\s+(?:a|an)\s+po\b", "EMO/CMO or purchase order"),
-    (r"\b(write|post|enter|push|update)\b.*\b(to|in|into)\s+(sap|kinaxis)\b", "write to SAP or Kinaxis"),
     (r"\b(e-?mail|send\s+(?:a\s+)?(?:note|message|mail))\b", "email"),
-    (r"\bcarrier\b", "carrier selection"),
+    (r"\b(create|raise|book|make|set\s+up|schedule)\b.*\b(shuttle|sto|stock\s+transport|transfer\s+order)\b", "create a shuttle or STO"),
+    (r"\brebalanc", "place a rebalancing order"),
+    (r"\b(raise|place|create|issue)\b.*\b(emo|cmo|work\s+order|purchase\s+order|po)\b", "raise an EMO, CMO or purchase order"),
+    (r"\b(write|post|enter|push|update)\b.*\b(to|in|into)\s+(sap|kinaxis)\b", "write to SAP or Kinaxis"),
+    (r"\b(upload|load|push|send)\b.*\bforecast", "upload a forecast"),
+    (r"\b(change|edit|adjust|update|raise|lower|increase|override|bump)\b.*\bforecast\b", "change a forecast"),
+    (r"\bforecast\b.*\bby\s+-?\d+\s*%", "change a forecast"),
+    (r"\b(emo|cmo)\b|\bwork\s+order\b|\bpurchase\s+order\b", "EMO/CMO or purchase order"),
+    (r"\bcarrier\b|\bbook\s+(?:a\s+)?(?:truck|load|freight)\b|\bfreight\s+rate", "carrier or transport booking"),
     (r"\bcanada\b|\bcac\d\b|\bmexico\b|\buk\b|\beurope\b", "non-US site"),
     (r"\b(results|earnings|revenue|share\s+price|stock\s+price)\b", "general business question"),
     (r"\bhow\s+should\b|\bbest\s+practice|\bin\s+general\b|\bthink\s+about\b", "general advice"),
@@ -35,12 +39,15 @@ OOS = [
 ]
 
 SCENARIO_WORDS = {
-    "S4": r"\bcuts?\b|\bcutting\b|\breason\s+codes?\b|\bcode\s+the\b|\bpfr\b|\bfill\s+rate\b|\bservice\s+(?:miss|failure|fail)",
-    "S2": r"\battainment\b|\badherence\b|\bfactory\b.*\b(?:at|drops?|running)\b|\b(?:pl|sl)\d{2}\b|\bba\d\b|\bwork\s*cent",
-    "S3": r"\bgrowth\b|\bgrow\b|\bcapacity\b|\d+\s*%\s*more\b|\bmore\b.*\d+\s*%|\bsegment\b",
+    "S4": r"\bcuts?\b(?!\s+[+-]?[\d,]+\s*k?\s*(?:cases?|cs)\b)|\bcutting\b|\breason\s+codes?\b|\bcode\s+the\b|\bpfr\b|\bfill\s+rate\b|\bservice\s+(?:miss|failure|fail)",
+    "S2": r"\battainment\b|\badherence\b|\bfactory\b.*\b(?:at|drops?|running)\b|\b(?:pl|sl)\d{2}\b|\bba\d\b|\bwork\s*cent"
+          r"|\b(?:st\.?\s*peters|saint\s+peters|belle\s*mead|plant|factory|line\s*\d+|stp)\b[^%]*\d+\s*%"
+          r"|\d+\s*%[^.?!]*\b(?:plant|factory|line)\b",
+    "S3": r"\bgrowth\b|\bgrow\b|\bcapacity\b|\bsegment\b"
+          r"|\d+\s*%\s*more\b[^.?!]*\b\d+\s*(?:oz|fz)\b|\bmake\b[^.?!]*\d+\s*%\s*more\b",
     "S5": r"\bwhat\s+changed\b|\bchanged\b|\bsince\s+last\s+week\b|\breview\s+my\s+pir\b|\bmy\s+pir\s+items\b|\bweek\s+over\s+week\b|\bmoved\b",
     "PIR": r"\bpir\b|\bprojected\s+inventory\b|\binventory\s+report\b",
-    "S1": r"\bcases?\b|\bcs\b|\bdemand\b|\bspike\b|\bextra\b|\bcan\s+we\s+(?:take|support|ship|cover)\b|\bcover\b|\bwoc\b|\bweeks?\s+of\s+cover\b|\d+\s*k\b|\bstock\b|\bon\s+hand\b",
+    "S1": r"\bcases?\b|\bcs\b|\bdemand\b|\bspike\b|\bextra\b|\bcan\s+we\s+(?:take|support|ship|cover)\b|\bcover\b|\bwoc\b|\bweeks?\s+of\s+cover\b|\d+\s*k\b|\bstock\b|\bon\s+hand\b|\d+\s*%\s*more\b|\bcustomer\s+wants\b",
 }
 PRIORITY = ["S4", "S5", "S2", "S3", "PIR", "S1"]
 
@@ -89,13 +96,33 @@ def find_delta(t: str):
     if not m:
         return None
     v = _num(m.group(2)) * (1000 if m.group(3) else 1)
-    neg = m.group(1) == "-" or re.search(r"\b(fewer|less|reduce|reduction|cancel|lower|drop)\b", t)
+    neg = m.group(1) == "-" or re.search(r"\b(fewer|less|reduce|reduction|cancel|lower|drop)\b", t) \
+        or re.search(r"\bcut\s+[+-]?[\d,]+", t)
     return int(-v if neg else v)
 
 
+def find_pct_range(t: str):
+    """'30-40%', '30 to 40%', '30%–40%' -> (30, 40)."""
+    m = re.search(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%?\s*(?:-|\u2013|\u2014|to)\s*(\d+(?:\.\d+)?)\s*(?:%|percent\b)", t)
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+
 def find_pct(t: str):
-    m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*(?:%|percent\b|pct\b)", t)
-    return float(m.group(1)) if m else None
+    if find_pct_range(t):
+        return None
+    m = re.search(r"(?<![\d.])([+-]?\d+(?:\.\d+)?)\s*(?:%|percent\b|pct\b)", t)
+    if not m:
+        return None
+    v = float(m.group(1))
+    if re.search(r"\b(less|fewer|drop|down|lower|cut)\b[^%]*" + re.escape(m.group(1)) + r"\s*%|" + re.escape(m.group(1)) + r"\s*%\s*(?:less|fewer|lower)\b", t):
+        v = -abs(v)
+    return v
+
+
+def find_line_name(t: str):
+    """A planner's name for a line ('Line 9') - mapped to a work centre only through the alias table."""
+    m = re.search(r"\bline\s*(\d{1,2})\b", t)
+    return f"Line {m.group(1)}" if m else None
 
 
 def find_size(t: str):
@@ -141,6 +168,9 @@ def find_week(t: str):
     m = re.search(r"\b(20\d{2})(\d{2})\b", t)
     if m and 1 <= int(m.group(2)) <= 53:
         return {"calweek": int(m.group(0))}
+    m = re.search(r"\b(?:week|wk)\s*#?\s*(\d{1,2})\b(?!\s*/)", t)
+    if m and 1 <= int(m.group(1)) <= 53:
+        return {"week_number": int(m.group(1))}
     m = re.search(r"\bweek\s+of\s+(.+?)(?=$|[?.,!]|\s+at\b|\s+in\b)", t)
     if m:
         d = find_date(m.group(1))
@@ -180,10 +210,22 @@ def find_item_text(t: str):
     return None
 
 
+def _clauses(t: str) -> list:
+    return [c.strip() for c in re.split(r",|;|\band\s+then\b|\band\b|\bthen\b|\bif\s+not\b", t) if c.strip()]
+
+
 def parse(text: str) -> Parse:
     t = " ".join(str(text).lower().split())
-    for rx, why in OOS:
+    oos_action = None
+    for i, (rx, why) in enumerate(OOS):
         if re.search(rx, t):
+            if i < ACTION_OOS:
+                # Answer the in-scope clauses when there are any; refuse a pure action request
+                rest = " ".join(c for c in _clauses(t) if not re.search(rx, c))
+                if rest and any(re.search(SCENARIO_WORDS[k], rest) for k in PRIORITY) and rest != t:
+                    oos_action = why
+                    t = rest
+                    break
             return Parse("OUT_OF_SCOPE", 0.95, why)
     hits = [s for s in PRIORITY if re.search(SCENARIO_WORDS[s], t)]
     # A cut on its own day is S4 even when the message also says 'cases'
@@ -196,6 +238,9 @@ def parse(text: str) -> Parse:
         "item_text": find_item_text(t),
         "delta_cases": find_delta(t),
         "pct": find_pct(t),
+        "pct_range": find_pct_range(t),
+        "line_name": find_line_name(t),
+        "out_of_scope_action": oos_action,
         "week": find_week(t),
         "date": find_date(t),
         "month": find_month(t),
