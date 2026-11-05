@@ -1006,7 +1006,9 @@ def gaps(session: dict) -> list:
                 "state": "open" if aw == "gap:pir_list" else "entered" if pir_rows else "idle",
                 "context": {"suggest": ["3283407", "3283419", "3313455", "3260319"]},
                 "entered": [f"{x['item']} {x['description'] or ''}" for x in pir_rows]})
-    out.append({"id": "kinaxis_snapshots", "title": "Kinaxis snapshots, last 2 weeks",
-                "sub": f"S5 · 1 loaded ({cx.snapshot_label()})", "sheet": None, "state": "idle", "context": {},
-                "entered": []})
+    snaps = cx.snapshot_dates()
+    out.append({"id": "kinaxis_snapshots", "title": "Kinaxis weekly snapshots",
+                "sub": (f"S5 · {len(snaps)} weekly loads, {snaps[0]:%m/%d} to {snaps[-1]:%m/%d}" if snaps
+                        else f"S5 · 1 loaded ({cx.snapshot_label()})"),
+                "sheet": None, "state": "entered" if len(snaps) >= 2 else "idle", "context": {}, "entered": []})
     return out
