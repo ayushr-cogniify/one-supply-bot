@@ -1,0 +1,75 @@
+# Schema contract (MVP doc 3.2). The adapter rejects a file whose headers differ.
+# Start: the two workbooks S1 and the PIR generator need. Add the rest one by one.
+kinaxis_data:
+  file_keyword: "Kinaxis_Data"          # matches 'Kinaxis Data' or 'Kinaxis_Data'
+  sheets:
+    supply_demand:
+      sheet: "Kinaxis Supply and Demand"
+      header_count: 41
+      key: [MATERIAL, LOCATION, CALWEEK]
+      required: [CALWEEK, LOCATION, MATERIAL, STOCK_PLANNED, STOCK_CONF, TOTAL_DEMAND,
+                 TOTAL_SUPPLY, FORECAST, SALES_ORDERS, DEP_DEM, IN_TRANSIT,
+                 PROD_PLANNED_, PROD_CONFIRMED, DISTRIBUTION_RECEIPT_PLANNED,
+                 TARGET_STOCK, EXPIRED_QUANTITY, SNAPSHOT_WEEK, DATA_LOAD]
+      comma_numbers: [STOCK_CONF, STOCKPROJ, SHORTAGE_CONF]
+sap_item_master:
+  file_keyword: "SAP_Item_Master"
+  sheets:
+    items:
+      sheet: "SAP Item Master"
+      header_count: 68
+      key: [ITEMCODE, PLANT]
+      required: [ITEMCODE, ITEM, UPC, GTIN, PLANT, CASETOEACH, CONSUMERUNITSIZE,
+                 CONSUMERUOM, MATERIALSTATUS, STANDARDCOGS]
+      text_ids: [ITEMCODE, UPC, GTIN]
+attainment:
+  file_keyword: "Attainment_information"
+  sheets:
+    monthly:
+      sheet: 0
+      header_count: 16
+      key: null                       # order lines; Fix and Actuals often on separate rows
+      required: ["Year Month", "Work Center", "SKU Code", "Production Fix (Volume)", "Production Actuals (Volume)"]
+      comma_numbers: ["Production Fix (Volume)", "Production Actuals (Volume)"]
+sap_inventory:
+  file_keyword: "SAP_Inventory_Snapshots"
+  sheets:
+    snapshots:
+      sheet: 0
+      header_count: 26
+      key: null                       # duplicate groups handled in adapter.inventory()
+      required: [PLANT, SLOC, MATERIAL, ONHAND, ATP_QUANTITY, ALLOCATION_QTY, ATP_AFTER_ALLOCATION,
+                 BLOCKED_INV, QUAL_INSPEC, INTRANSIT_QTY, Updated_Date]
+kinaxis_master:
+  file_keyword: "Kinaxis_Data"
+  sheets:
+    master:
+      sheet: "Kinaxis Master"
+      header_count: 110
+      key: [product, site]
+      required: [product, site, product_desc, segment_desc, consumer_product_size_id]
+    lanes:
+      sheet: "Kinaxis Part Source (Lanes)"
+      header_count: 22
+      key: [KEY]
+      required: [PART, SOURCE_SITE, DESTINATION_SITE, "LEADTIME DAYS", MINIMUM_QTY, MULTIPLE_QTY, TYPE]
+transport:
+  file_keyword: "Transportation_costs"
+  sheets:
+    lanes:
+      sheet: 0
+      header_count: 24
+      key: null
+      normalize_headers: true         # lower-case, punctuation and spaces to '_'
+      rename: {sap_kinaxis_code: sap_kinaxis_code_origin, sap_kinaxis_code_1: sap_kinaxis_code_dest}
+      required: [sap_kinaxis_code_origin, sap_kinaxis_code_dest, bid_mode_type, cost_per_load_lh_usd]
+      money: [cost_per_load_lh_usd, btf_tl_est_total, btf_im_est_total]
+reason_codes:
+  file_keyword: "SAP_Reason_Codes"    # parsed by adapter.reason_codes() / storyline(); layout is not a flat table
+pfr:
+  file_keyword: "PFR_Data"            # 180 MB: loaded once with usecols, then cached
+  sheets:
+    ship:
+      sheet: "Summary ZSD Ship"
+      header_count: 86
+      required: ["Material", "Cut Date Ship.", "OrderQuantity", "Cases Cut Total", "Final Local RC", "Plant"]

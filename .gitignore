@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.cache/
+.pytest_cache/
+node_modules/
+web/dist/
+web/public/engine.zip
+web/test-results/
+web/playwright-report/
+engine/data/
+.DS_Store
+.env
+.bundle/
