@@ -5,8 +5,8 @@
 
 const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/";
 
-type Data = { base: string; headers: Record<string, string> };
-type Req = { id: number; op: "boot" | "handle" | "checks"; base?: string; data?: Data; request?: unknown; session?: unknown };
+type Data = { label: string; base: string; headers: Record<string, string> };
+type Req = { id: number; op: "boot" | "handle" | "checks"; base?: string; data?: Data[]; request?: unknown; session?: unknown };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let api: any = null;
@@ -14,7 +14,7 @@ let api: any = null;
 const progress = (step: string, detail = "", done = false) =>
   (self as DedicatedWorkerGlobalScope).postMessage({ type: "progress", step, detail, done });
 
-async function boot(base: string, data: Data) {
+async function boot(base: string, sources: Data[]) {
   const t0 = performance.now();
   progress("runtime", "Python runtime");
   const { loadPyodide } = await import(/* @vite-ignore */ `${PYODIDE}pyodide.mjs`);
@@ -32,11 +32,22 @@ async function boot(base: string, data: Data) {
   progress("engine", "", true);
 
   progress("data", "extracts");
-  // The extracts come from the private bucket with the signed-in user's token; never from the site
-  const get = (f: string) => fetch(`${data.base}${f}`, { headers: data.headers, cache: "no-store" });
-  const mres = await get("manifest.json");
-  if (mres.status === 400 || mres.status === 401 || mres.status === 403) throw new Error("your session is not allowed to read the data. Sign out and sign in again");
-  if (!mres.ok) throw new Error(`manifest.json: HTTP ${mres.status}`);
+  // The extracts come from a private bucket with the signed-in user's token, never from the site.
+  // First source that serves the manifest wins (GCP, then Supabase).
+  let data: Data | null = null;
+  let mres: Response | null = null;
+  const tried: string[] = [];
+  for (const src of sources) {
+    try {
+      const r = await fetch(`${src.base}manifest.json`, { headers: src.headers, cache: "no-store" });
+      if (r.ok) { data = src; mres = r; break; }
+      tried.push(`${src.label}: HTTP ${r.status}`);
+    } catch (e) {
+      tried.push(`${src.label}: ${e}`);
+    }
+  }
+  if (!data || !mres) throw new Error(`no data source could be read (${tried.join("; ")}). Sign out and sign in again`);
+  const get = (f: string) => fetch(`${data!.base}${f}`, { headers: data!.headers, cache: "no-store" });
   const manifest = await mres.json();
   py.FS.mkdirTree("/data");
   py.FS.writeFile("/data/manifest.json", JSON.stringify(manifest));
@@ -60,6 +71,8 @@ async function boot(base: string, data: Data) {
   const out = JSON.parse(api.boot("/data"));
   progress("start", "", true);
   out.info.boot_ms = Math.round(performance.now() - t0);
+  out.info.data_source = data.label;
+  out.info.data_fallbacks = tried;
   return out;
 }
 

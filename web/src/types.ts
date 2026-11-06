@@ -154,6 +154,8 @@ export interface BootInfo {
   models: { stage: string; model: string; endpoint: string; running: string }[];
   route: Record<string, string>;
   boot_ms?: number;
+  data_source?: string;
+  data_fallbacks?: string[];
 }
 
 export interface Reply {

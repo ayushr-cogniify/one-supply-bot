@@ -29,7 +29,7 @@ function call<T>(op: string, payload: Record<string, unknown> = {}): Promise<T> 
 let booting: Promise<{ info: BootInfo; session: Session; gaps: Gap[] }> | null = null;
 
 // One boot per page, even when React runs the effect twice in development
-export function boot(progress: (p: Progress) => void, data: { base: string; headers: Record<string, string> }) {
+export function boot(progress: (p: Progress) => void, data: { label: string; base: string; headers: Record<string, string> }[]) {
   onProgress = progress;
   const base = new URL(import.meta.env.BASE_URL, window.location.href).href;
   booting ??= call<{ info: BootInfo; session: Session; gaps: Gap[] }>("boot", { base, data });

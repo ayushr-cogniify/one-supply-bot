@@ -122,6 +122,37 @@ Rushi, not a code bug.
 The workbooks are not in the repository, so the golden suites skip on GitHub Actions and the logic
 tests still run. Run `scripts/test_all.sh` locally before you push.
 
+## Data source: GCP Cloud Storage (Supabase fallback)
+
+The browser loads the data bundle from the first source that answers:
+
+1. **GCP:** `gs://supply-bot-adgjlp/osb-web/`, a private bucket read through the `osb-data` Edge
+   Function.
+   - It checks the Supabase sign-in, then reads the bucket with a read-only service-account key
+     (secret `GCS_SA_KEY`).
+   - It serves only the manifest and the `*.csv.gz` files under `osb-web/`. The raw workbooks in the
+     bucket are never reachable.
+2. **Supabase Storage:** the private bucket `osb-data`, which only signed-in users can read.
+
+**Admin, Admin → Load report,** shows which source served the data.
+
+To update the GCP copy:
+
+```bash
+gcloud storage cp .bundle/manifest.json .bundle/*.csv.gz gs://supply-bot-adgjlp/osb-web/
+```
+
+The service account comes from a GCP admin, run once:
+
+```bash
+gcloud iam service-accounts create osb-web-reader --project cogniify-finops --display-name "One Supply Bot web reader"
+gcloud storage buckets add-iam-policy-binding gs://supply-bot-adgjlp \
+  --member serviceAccount:osb-web-reader@cogniify-finops.iam.gserviceaccount.com --role roles/storage.objectViewer
+gcloud iam service-accounts keys create osb-web-reader.json --iam-account osb-web-reader@cogniify-finops.iam.gserviceaccount.com
+```
+
+Store the key file as the Supabase Edge Function secret `GCS_SA_KEY`, then delete the local copy.
+
 ## Claude (question understanding)
 
 The `supabase/functions/osb-nlu` Edge Function runs Claude Haiku 5.5. It handles the scope gate and

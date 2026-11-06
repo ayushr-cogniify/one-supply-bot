@@ -16,11 +16,14 @@ export const supabase = createClient(SUPABASE_URL, ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: "implicit" },
 });
 
-export function dataSource(session: Session) {
-  return {
-    base: `${SUPABASE_URL}/storage/v1/object/authenticated/${BUCKET}/`,
-    headers: { apikey: ANON_KEY, Authorization: `Bearer ${session.access_token}` },
-  };
+// Data sources, in order: the private GCP bucket (through the osb-data function), then the private
+// Supabase bucket. The worker uses the first one that serves the manifest.
+export function dataSources(session: Session) {
+  const headers = { apikey: ANON_KEY, Authorization: `Bearer ${session.access_token}` };
+  return [
+    { label: "GCP Cloud Storage (gs://supply-bot-adgjlp/osb-web)", base: `${SUPABASE_URL}/functions/v1/osb-data/`, headers },
+    { label: "Supabase Storage (osb-data)", base: `${SUPABASE_URL}/storage/v1/object/authenticated/${BUCKET}/`, headers },
+  ];
 }
 
 export const redirectTo = () => new URL(import.meta.env.BASE_URL, window.location.href).href;

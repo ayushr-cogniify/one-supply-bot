@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session as AuthSession } from "@supabase/supabase-js";
 import { ask, boot, runChecks } from "./engine";
-import { dataSource, linkError, linkType, supabase } from "./auth";
+import { dataSources, linkError, linkType, supabase } from "./auth";
 import SignIn from "./components/SignIn";
 import { understand } from "./claude";
 import type { Action, BootInfo, Card, Gap, Message, Reply, Session, Trace } from "./types";
@@ -112,7 +112,7 @@ function Planner({ auth }: { auth: AuthSession }) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    boot((p) => setProg((s) => ({ ...s, [p.step]: { detail: p.detail, done: p.done } })), dataSource(auth))
+    boot((p) => setProg((s) => ({ ...s, [p.step]: { detail: p.detail, done: p.done } })), dataSources(auth))
       .then(async (r) => {
         setInfo(r.info);
         const saved = load();

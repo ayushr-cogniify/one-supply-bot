@@ -110,6 +110,7 @@ export function AdminDrawer({ info, session, onClose, onChecks, onReset, onRetra
     <Shell title="Admin" sub={`Bundle built ${info.bundle_created?.replace("T", " ").slice(0, 16)} UTC · engine ready in ${((info.boot_ms ?? 0) / 1000).toFixed(1)} s`} onClose={onClose} tabs={tabs}>
       {tab === "load" && (
         <>
+          <p style={{ marginTop: 0, fontSize: 13 }}><b>Data source:</b> {info.data_source ?? "unknown"}{info.data_fallbacks?.length ? <span className="muted"> (tried first: {info.data_fallbacks.join("; ")})</span> : null}</p>
           <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>Each workbook is read as delivered and checked against the schema contract. A file whose headers differ is rejected. Cleaning happens in memory; the files are never edited.</p>
           <table className="t">
             <thead><tr><th>Workbook · sheet</th><th className="r">Headers</th><th className="r">Rows</th><th>Notes</th></tr></thead>
