@@ -121,54 +121,287 @@ def _slim(r):
     return r
 
 
+PRONOUN = re.compile(r"^(?:it|this|that|this item|that item|this one|that one|same item|the same item|same|this sku|"
+                     r"that sku|the item|that product|this product)$")
+CONTINUE = re.compile(r"\b(instead|what about|how about|what if|and if|now|also|same|again|rerun|re-run|try|switch|"
+                      r"change it|make it|use|still|on top)\b")
+WHY = re.compile(r"^\s*(?:and\s+|but\s+|so\s+|ok\s+)?(?:why\b|explain\b|how come\b|what(?:'s| is) the reason|what caused|"
+                 r"what drives|what's driving|what is driving)")
+APPROVE = re.compile(r"^\s*(?:yes[,!. ]*)?(?:ok[,!. ]*)?(?:please\s+)?(?:approve|approved|go ahead|confirm|looks good)\b")
+REJECT = re.compile(r"^\s*(?:no[,!. ]*)?(?:reject|decline|cancel (?:it|the draft))\b")
+RERUN = re.compile(r"^\s*(?:please\s+)?(?:rerun|re-run|run it again|try again|run that again|refresh)\b")
+UNSURE = re.compile(r"^\s*(?:not sure|don'?t know|no idea|unknown|skip|pass|n/?a)\b")
+
+
+def _norm_tokens(x: str) -> set:
+    """Words plus pack sizes as their own tokens ('4x90' and '4/90FZ' both give '4/90')."""
+    x = x.lower()
+    packs = {f"{a}/{b}" for a, b in re.findall(r"(\d+)\s*(?:x|/|by)\s*\(?(\d+)", x)}
+    x = re.sub(r"(\d+)\s*(?:x|/|by)\s*\(?(\d+)\w*", " ", x)
+    words = {w for w in re.split(r"[^a-z0-9.]+", x) if w and w not in {"the", "one", "a", "an", "of", "lysol", "us", "it", "that", "this"}}
+    return words | packs
+
+
+def _match_option(p, text):
+    """A typed reply to a question with options: pick the option it names (code or words)."""
+    offered = p.get("offered") or []
+    if not offered:
+        return None
+    low = text.lower()
+    exact = [o for o in offered if str(o["value"]).lower() in low.split() or str(o["value"]).lower() == low.strip()]
+    if len(exact) == 1:
+        return exact[0]
+    words = _norm_tokens(text)
+    if not words:
+        return None
+    scored = sorted(((len(words & _norm_tokens(o["label"])), i) for i, o in enumerate(offered)), reverse=True)
+    if scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return offered[scored[0][1]]
+    return None
+
+
+def _remember(t, p, card):
+    """Conversation memory: what the planner is working on, for follow-ups and references."""
+    s, r = t.s, p.get("r", {})
+    ctx = s.setdefault("ctx", {})
+    mat = r.get("material") or (card.get("top_items") or [None])[0] or card.get("focus_material")
+    if mat:
+        ctx["material"] = mat
+    for k in ("lc", "calweek", "work_center"):
+        if r.get(k) and r.get(k) != "NETWORK":
+            ctx[k] = r[k]
+    ctx["scenario"] = p["scenario"]
+    s["last_answer"] = {"text": card.get("narrative"), "card_id": card["id"], "scenario": card["scenario"],
+                        "title": card.get("title"), "why": card.get("why")}
+
+
+def _merge_reply(p, slots):
+    """Keep every detail a reply carries (quantity, week, LC...) even when it answers a different question."""
+    sl, r = p["slots"], p["r"]
+    keep = {k: v for k, v in slots.items() if k in ("delta_cases", "pct", "pct_range", "week", "window_weeks",
+                                                     "horizon_weeks", "size_oz", "brand", "month", "months", "date",
+                                                     "network", "factory", "work_center", "line_name")}
+    sl.update(keep)
+    if "week" in keep:
+        r.pop("calweek", None)
+    if len(slots.get("lcs", [])) == 1:
+        r["lc"] = slots["lcs"][0]
+    elif slots.get("network") and p["scenario"] == "S1":
+        r["lc"] = "NETWORK"
+    if slots.get("work_center"):
+        r["work_center"] = slots["work_center"]
+    return bool(keep) or bool(slots.get("lcs"))
+
+
+def _continue_last(t, slots, text):
+    """Rerun the last request with only what the new message changes (LC, quantity, week, window,
+    horizon, attainment, growth, item). Returns the new pending request, or None."""
+    last = t.s.get("last")
+    if not last:
+        return None
+    sc = last["scenario"]
+    p = {"scenario": sc, "slots": dict(last["slots"]), "r": {k: v for k, v in last["r"].items()
+                                                              if k in ("material", "lc", "calweek", "work_center",
+                                                                       "selector", "label", "pct", "growth",
+                                                                       "s5_mode", "s5_scope", "pir_scope")},
+         "awaiting": None, "questions": 0, "text": text}
+    sl, r = p["slots"], p["r"]
+    sl.pop("out_of_scope_action", None)
+    changed = []
+    item = (slots.get("item_text") or "").strip().lower()
+    if item and not PRONOUN.match(item):
+        sl["item_text"] = item
+        r.pop("material", None)
+        changed.append("item")
+    if slots.get("lcs"):
+        r["lc"] = slots["lcs"][0] if len(slots["lcs"]) == 1 else "NETWORK"
+        r.pop("scope", None)
+        changed.append("LC")
+    elif slots.get("network") and sc == "S1":
+        r["lc"] = "NETWORK"
+        changed.append("LC")
+    if slots.get("week"):
+        sl["week"] = slots["week"]
+        r.pop("calweek", None)
+        changed.append("week")
+    if "delta_cases" in slots:
+        sl["delta_cases"] = slots["delta_cases"]
+        sl.pop("pct", None) if sc == "S1" else None
+        changed.append("quantity")
+    if "pct" in slots:
+        if sc == "S1":
+            sl["pct"] = slots["pct"]
+            sl.pop("delta_cases", None)
+        elif sc == "S2":
+            sl["pct"] = slots["pct"]
+            r.pop("pct", None)
+        elif sc == "S3":
+            sl["pct"] = slots["pct"]
+            for k in ("growth", "growth_list", "growth_choice"):
+                r.pop(k, None)
+        changed.append("percentage")
+    for k in ("window_weeks", "horizon_weeks", "months", "month"):
+        if slots.get(k) is not None:
+            sl[k] = slots[k]
+            changed.append(k.replace("_", " "))
+    if slots.get("work_center"):
+        r["work_center"] = slots["work_center"]
+        changed.append("line")
+    if slots.get("size_oz") and sc in ("S3", "PIR"):
+        sl["size_oz"] = slots["size_oz"]
+        r.pop("selector", None), r.pop("label", None)
+        changed.append("segment")
+    if slots.get("rerun"):
+        changed.append("rerun")
+    if not changed:
+        return None
+    t.span("follow_up", reused=sc, changed=changed)
+    return p
+
+
+def _explain(t, text):
+    last = t.s.get("last_answer")
+    if not last or not last.get("text"):
+        return False
+    why = last.get("why")
+    t.say(("From the last answer: " + (why or last["text"])) + " The card shows the rows behind it.", kind="bot")
+    t.span("explain_from_memory", card=last["card_id"])
+    return True
+
+
+def _open_draft(t):
+    return next((d for d in reversed(list(t.s.get("drafts", {}).values())) if d["status"] == "pending"), None)
+
+
 def _on_message(t, text, external=None):
     s = t.s
+    low = " ".join(text.lower().split())
     p = s.get("pending")
-    if p and p.get("awaiting") and _fill_text(t, p, text):
-        t.span("follow_up", awaiting=p["awaiting"], text=text)
-        p["awaiting"] = None
-        return _advance(t, p)
-    if re.search(r"\bdraft\b", text.lower()) and s.get("last_replan") and \
-            re.search(r"\breplan|\bconstraint|\brequest\b|\bcall\b", text.lower()):
+
+    # 1. An answer to the open question: an offered option, then the expected value, keeping extra details
+    if p and p.get("awaiting"):
+        a = p["awaiting"]
+        if a in ("pacing_national", "pacing_lc", "pacing_pct") and UNSURE.match(low):
+            _save_pacing(t, p, p["r"].get("pacing_step"), "skip")
+            p["awaiting"] = None
+            return _advance(t, p)
+        opt = _match_option(p, text)
+        if opt is not None:
+            t.span("follow_up", awaiting=a, matched_option=opt["label"])
+            return _on_option(t, {"type": "option", "slot": a, "value": opt["value"], "label": opt["label"]})
+        extra = nlu.parse("cases " + text).slots
+        merged = _merge_reply(p, extra)
+        looks_like_item = not merged or (a in ("item", "material") and extra.get("item_text") and
+                                         extra.get("item_text") != low)
+        if a not in ("item", "material") or looks_like_item:
+            if _fill_text(t, p, text):
+                t.span("follow_up", awaiting=a, text=text)
+                p["awaiting"] = None
+                return _advance(t, p)
+        if merged:
+            # The reply carried other details: keep them and ask only for what is still missing (once)
+            kept = sorted(k for k in extra if k not in ("cover_query", "item_text", "code_cut"))
+            t.span("follow_up", awaiting=a, kept=kept)
+            p["kept_note"] = "Noted the " + ", ".join(k.replace("_", " ").replace("delta cases", "quantity").replace("lcs", "LC")
+                                                     for k in kept) + "."
+            p["awaiting"] = None
+            p["questions"] = max(0, p["questions"] - 1)       # re-asking the same open question is not a new one
+            return _advance(t, p)
+
+    # 2. Conversation actions that need no new request
+    d = _open_draft(t)
+    if d and APPROVE.match(low):
+        return _on_decision(t, {"type": "approve", "draft_id": d["draft_id"]})
+    if d and REJECT.match(low):
+        return _on_decision(t, {"type": "reject", "draft_id": d["draft_id"]})
+    if re.search(r"\bdraft\b", low) and s.get("last_replan") and \
+            re.search(r"\breplan|\bconstraint|\brequest\b|\bcall\b|\bit\b|\bthat\b", low):
         t.span("draft_request", text=text)
         return _draft(t, "replan request", s["last_replan"]["text"], replan=s["last_replan"])
+    if RERUN.match(low):
+        follow = _continue_last(t, {"rerun": True}, text)
+        if follow:
+            return _advance(t, follow)
+
     parse = models.scope_and_slots(text, external)
     t.span("scope_gate", engine=parse["engine"], label=parse["label"], confidence=parse["confidence"],
            reason=parse["reason"], model_ms=parse.get("ms"))
-    if parse["label"] in ("FOLLOW_UP", "DATA_ENTRY"):
-        t.span("slots", engine=parse["engine"], slots=parse["slots"])
-        s["last_route"] = parse["engine"]
-        return _follow_or_entry(t, parse, text)
     t.span("slots", engine=parse["engine"], slots=parse["slots"])
     s["last_route"] = parse["engine"]
-    if parse["label"] == "OUT_OF_SCOPE":
-        follow = _follow_up(t, parse, text) if parse["reason"] == "no scenario keyword" else None
+    sl = parse["slots"]
+    rules = nlu.parse("cases " + text).slots          # second reader for follow-up details
+    for k in ("window_weeks", "horizon_weeks"):
+        if k not in sl and k in rules:
+            sl[k] = rules[k]
+
+    # 2b. A stated line capacity: offer to save it (nothing is saved until the planner confirms)
+    if sl.get("work_center") and sl.get("quantity_units") and re.search(r"\bcapacity\b", low):
+        return _follow_or_entry(t, parse, text)
+
+    # 3. "Why...?" about the last answer
+    if WHY.match(low) and not sl.get("item_text") and parse["label"] in ("OUT_OF_SCOPE", "FOLLOW_UP", "DATA_ENTRY",
+                                                                          s.get("ctx", {}).get("scenario")):
+        if _explain(t, text):
+            return
+
+    # 4a. "that item" / "it" in a follow-up: the item from memory, in the view the planner asks for
+    item = (sl.get("item_text") or "").strip().lower()
+    refers = (item and PRONOUN.match(item)) or re.search(r"\b(?:that|this|the same|same)\s+(?:item|sku|product|one)\b|\bfor it\b", low)
+    if refers and s.get("ctx", {}).get("material") and parse["label"] in ("FOLLOW_UP", "DATA_ENTRY", "OUT_OF_SCOPE", "S1", "PIR"):
+        view = ("PIR" if re.search(r"\bpir\b|projected inventory|inventory report", low) else
+                "S1" if re.search(r"\bcover\b|\bwoc\b|\bstock\b|on hand|\bplan\b", low) else
+                parse["label"] if parse["label"] in ("S1", "PIR") else None)
+        if view:
+            sl.pop("item_text", None)
+            if view == "S1" and "delta_cases" not in sl and "pct" not in sl:
+                sl["cover_query"] = True
+            t.span("context", used="material from memory", material=s["ctx"]["material"], view=view)
+            return _advance(t, {"scenario": view, "slots": sl, "r": {"material": s["ctx"]["material"]},
+                                "awaiting": None, "questions": 0, "text": text})
+
+    # 4. A continuation or a value for the last request
+    if parse["label"] in ("FOLLOW_UP", "DATA_ENTRY") or \
+            (parse["label"] == "OUT_OF_SCOPE" and parse["reason"] == "no scenario keyword"):
+        if parse["label"] == "DATA_ENTRY" and sl.get("work_center") and sl.get("quantity_units"):
+            return _follow_or_entry(t, parse, text)
+        follow = _continue_last(t, sl, text)
         if follow:
             return _advance(t, follow)
+        if parse["label"] != "OUT_OF_SCOPE":
+            return _follow_or_entry(t, parse, text)
+    if parse["label"] == "OUT_OF_SCOPE":
         s["pending"] = None
         t.say(T["OUT_OF_SCOPE"], template="OUT_OF_SCOPE", options=[
             {"label": o["label"], "action": {"type": "option", "slot": "scenario", "value": o["value"]}}
             for o in SCENARIO_OPTIONS])
         return
-    p = {"scenario": parse["label"], "slots": parse["slots"], "r": {}, "awaiting": None, "questions": 0,
-         "text": text}
+
+    # 5. A request in the same scenario that leaves out what the last one set: carry it over
+    last = s.get("last")
+    item = (sl.get("item_text") or "").strip().lower()
+    if item and PRONOUN.match(item) or (not item and re.search(r"\b(?:that|this|same)\s+(?:item|sku|product|one)\b", low)):
+        if s.get("ctx", {}).get("material"):
+            sl.pop("item_text", None)
+            p = {"scenario": parse["label"], "slots": sl, "r": {"material": s["ctx"]["material"]}, "awaiting": None,
+                 "questions": 0, "text": text}
+            t.span("context", used="material from memory", material=s["ctx"]["material"])
+            return _advance(t, p)
+    # Extra demand asked right after an attainment run ("can it still support 3000 more cases?") rides on it
+    if last and last["scenario"] == "S2" and parse["label"] == "S1" and CONTINUE.search(low):
+        follow = _continue_last(t, sl, text)
+        if follow:
+            return _advance(t, follow)
+    if last and last["scenario"] == parse["label"] and CONTINUE.search(low):
+        follow = _continue_last(t, sl, text)
+        if follow:
+            return _advance(t, follow)
+    p = {"scenario": parse["label"], "slots": sl, "r": {}, "awaiting": None, "questions": 0, "text": text}
     return _advance(t, p)
 
 
 def _follow_or_entry(t, parse, text):
-    """Claude labelled the message a continuation or a value. Answer the open question with it, offer
-    to save a stated line capacity, or rerun the last request with the details changed."""
+    """A value with no open question: offer to save a stated line capacity."""
     s, sl = t.s, parse["slots"]
-    p = s.get("pending")
-    if p and p.get("awaiting"):
-        p["slots"].update({k: v for k, v in sl.items() if k != "out_of_scope_action"})
-        for k in ("lcs",):
-            if sl.get(k) and len(sl[k]) == 1:
-                p["r"]["lc"] = sl[k][0]
-        if sl.get("work_center"):
-            p["r"]["work_center"] = sl["work_center"]
-        p["awaiting"] = None
-        return _advance(t, p)
     qu = sl.get("quantity_units")
     if sl.get("work_center") and qu:
         wc = sl["work_center"]
@@ -179,36 +412,13 @@ def _follow_or_entry(t, parse, text):
                             "work_center": wc, "rated_capacity_units_per_month": qu["value"],
                             "unit_basis": "Bottles" if qu["unit"] == "bottles" else "Units"}}}])
         return
-    if re.search(r"\bdraft\b", text.lower()) and s.get("last_replan"):
-        return _draft(t, "replan request", s["last_replan"]["text"], replan=s["last_replan"])
-    follow = _follow_up(t, {"label": "OUT_OF_SCOPE", "reason": "no scenario keyword"}, text, sl)
-    if follow:
-        return _advance(t, follow)
     t.say(T["OUT_OF_SCOPE"], template="OUT_OF_SCOPE", options=[
         {"label": o["label"], "action": {"type": "option", "slot": "scenario", "value": o["value"]}}
         for o in SCENARIO_OPTIONS])
 
 
 def _follow_up(t, parse, text, slots=None):
-    """'And at Atlanta?' after an S1 answer: reuse the last request, change what the message names."""
-    last = t.s.get("last")
-    if not last:
-        return None
-    raw = slots if slots is not None else nlu.parse("cases " + text).slots   # read slots without the gate
-    keys = {"lcs", "week", "delta_cases", "pct", "work_center"}
-    if not (keys & set(raw)):
-        return None
-    p = {"scenario": last["scenario"], "slots": {**last["slots"], **{k: raw[k] for k in keys & set(raw)}},
-         "r": {k: v for k, v in last["r"].items() if k in ("material", "work_center", "selector", "label")},
-         "awaiting": None, "questions": 0, "text": text}
-    if "lcs" in raw:
-        p["r"].pop("lc", None)
-    if "week" in raw:
-        p["r"].pop("calweek", None)
-    if "work_center" in raw:
-        p["r"]["work_center"] = raw["work_center"]
-    t.span("follow_up", reused=last["scenario"], changed=sorted(keys & set(raw)))
-    return p
+    return _continue_last(t, slots if slots is not None else nlu.parse('cases ' + text).slots, text)
 
 
 def _on_option(t, req):
@@ -356,6 +566,9 @@ def _ask(t, p, slot, text, template=None, options=None, note=None, count=True):
         p["questions"] += 1
     p.setdefault("trace_ids", []).append(t.trace_id)
     p["awaiting"] = slot
+    p["offered"] = [{"label": o["label"], "value": o["value"]} for o in (options or [])]
+    if p.get("kept_note"):
+        text = f"{p.pop('kept_note')} {text}"
     s["pending"] = p
     t.say(text, template=template, options=[{"label": o["label"], "primary": o.get("primary", False),
                                             "action": {"type": "option", "slot": slot, "value": o["value"],
@@ -504,6 +717,7 @@ def _done(t, p, card):
                            "options": [], "note": None, "template": None, "tone": None})
     s["last"] = {"scenario": p["scenario"], "slots": p["slots"], "r": {k: v for k, v in p["r"].items()
                                                                         if isinstance(v, (str, int, float, dict, list))}}
+    _remember(t, p, card)
     replan = card.get("replan")
     if replan:
         s["last_replan"] = replan
@@ -879,6 +1093,10 @@ def _s4(t, p):
         alt = f" Alternate: {tv['alternate_code']}." if tv.get("alternate_code") else ""
         _draft(t, f"reason code {code}", f"Assign SAP reason code {code} to the {cd} cut of {m} at {lc}.{alt}",
                code=code, cut=r["cut_values"])
+    elif r.get("skip_national") or r.get("skip_lc"):
+        skipped = " and ".join(x for x, k in (("national", "skip_national"), (f"{lc}", "skip_lc")) if r.get(k))
+        t.say(f"Without the {skipped} ordered % of forecast, rules R03/R04 stay unknown, so I won't propose a code. "
+              "Enter it in Data Gaps when you have it and the tree will continue.")
     elif "inventory_snapshot" in needs:
         t.say(f"There is no SAP inventory snapshot within 3 days before {cd} at {lc}, so the stock branch cannot be "
               "walked. I will not propose a code.")

@@ -589,7 +589,10 @@ def s5_kinaxis(card_id, scope_label, diff) -> dict:
         narrative = (f"Between the {v['date_a']} and {v['date_b']} Kinaxis loads, {fmt_int(v['changes_total'])} item and LC "
                      f"positions moved for week {wk}. Top risk: {top['material']} at {top['location']}, from "
                      f"{top['woc_a']} to {top['woc_b']} weeks of cover ({top['driver']}).")
-    card = {"id": card_id, "scenario": "S5", "status": "ok",
+    why = " ".join(f"{r['material']} at {r['location']}: {r['woc_a']} to {r['woc_b']} weeks, {r['driver']} "
+                   f"(stock {fmt_int(r['stock_a'])} to {fmt_int(r['stock_b'])} cases, forward demand "
+                   f"{fmt_int(r['demand_a'])} to {fmt_int(r['demand_b'])})." for r in rows[:3]) or None
+    card = {"id": card_id, "scenario": "S5", "status": "ok", "why": why, "top_items": [r["material"] for r in rows[:3]],
             "subtitle": f"{scope_label} \u00b7 Kinaxis {v['date_a']} vs {v['date_b']} \u00b7 week {wk}", "blocks": blocks}
     return finish(card, [diff], narrative)
 
@@ -736,7 +739,15 @@ def s1_assess(card_id, material, desc, res) -> dict:
         elif v["factory"]:
             f = v["factory"][0]
             n.append(f"No LC has spare stock; suggest a factory replan at {f['site']}, which has {fmt_int(f['planned_cases'])} cases planned in the horizon.")
-    card = {"id": card_id, "scenario": "S1", "status": "ok",
+    whys = []
+    for d in v["dips"]:
+        reason = (f"demand of {fmt_int(d['demand'])} cases against {fmt_int(d['supply'])} cases of supply"
+                  if d["demand"] > d["supply"] else f"projected stock of {fmt_int(d['stock_after'])} cases is low for the demand ahead")
+        nxt = (f", and the next inbound ({fmt_int(d['next_inbound_cases'])} cases) only lands in week {d['next_inbound_week']}"
+               if d["next_inbound_week"] else ", and no inbound lands in the horizon")
+        whys.append(f"In week {d['calweek']} {lc} is at {d['woc_after']} weeks: {reason}{nxt}.")
+    card_why = " ".join(whys) or None
+    card = {"id": card_id, "scenario": "S1", "status": "ok", "why": card_why, "focus_material": material,
             "subtitle": f"{material} {desc or ''} · {fmt_signed(v['delta_cases'])} cases at "
                         f"{'the network (by LC demand)' if v.get('requested_scope') == 'NETWORK' else lc} · week {week} · {v['window_weeks']}-week cover",
             "blocks": blocks}

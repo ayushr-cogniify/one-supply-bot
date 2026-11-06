@@ -56,6 +56,7 @@ MONTHS = {m: i + 1 for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "ju
 WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
            "ten": 10, "eleven": 11, "twelve": 12}
 
+GENERIC = {"demand", "stock", "cover", "supply", "volume", "units", "inventory", "orders", "cases", "it", "that", "this"}
 ITEM_STOP = r"(?=\s+(?:at|in|from|to|on|for|next|this|week|by|vs|versus|with|starting|over|across)\b|[?.,!;]|$)"
 
 
@@ -155,6 +156,15 @@ def find_pct_reduction(t: str):
     return float(m.group(1)) if m else None
 
 
+def find_capacity_statement(t: str):
+    """'PL11 capacity is 2.5M bottles a month' -> {'value': 2500000, 'unit': 'bottles'}."""
+    m = re.search(r"\bcapacity\b[^0-9]{0,30}(\d+(?:\.\d+)?)\s*(m|mm|million|k|thousand)?\b\s*(bottles|units|eaches|cases)?", t)
+    if not m or not re.search(r"\b(?:pl|sl)\d{2}\b|\bba\d\b", t):
+        return None
+    mult = {"m": 1e6, "mm": 1e6, "million": 1e6, "k": 1e3, "thousand": 1e3}.get(m.group(2) or "", 1)
+    return {"value": float(m.group(1)) * mult, "unit": m.group(3) or "units"}
+
+
 def find_line_name(t: str):
     """A planner's name for a line ('Line 9') - mapped to a work centre only through the alias table."""
     m = re.search(r"\bline\s*(\d{1,2})\b", t)
@@ -249,6 +259,8 @@ def find_item_text(t: str):
         m = re.search(rx, t)
         if m:
             s = re.sub(r"^(?:the|our|my|some)\s+", "", m.group(1).strip())
+            if s.split()[0] in GENERIC:
+                continue
             if s and len(s) > 2 and s not in {"lysol", "the", "our", "my", "us"} and not re.fullmatch(r"[\d,.\s%+-]*|week.*|lcs?|network|cases?|the|next", s):
                 return s
     return None
@@ -276,10 +288,9 @@ def parse(text: str) -> Parse:
     label = hits[0] if hits else None
     if label == "S3" and "S2" in hits and not re.search(r"\bgrowth\b|\bgrow\b|\bmore\b", t):
         label = "S2"
-    if label is None:
-        return Parse("OUT_OF_SCOPE", 0.4, "no scenario keyword")
+    no_keyword = label is None
     # Cover for a whole segment (no growth asked) is a projected-inventory view, not S3
-    if label == "S3" and re.search(r"\bcover\b|\bwoc\b", t) and not re.search(r"\bgrow|growth|capacity|\d+\s*%", t):
+    if not no_keyword and label == "S3" and re.search(r"\bcover\b|\bwoc\b", t) and not re.search(r"\bgrow|growth|capacity|\d+\s*%", t):
         label = "PIR"
     slots = {
         "item_text": find_item_text(t),
@@ -290,6 +301,7 @@ def parse(text: str) -> Parse:
         "window_weeks": find_window(t),
         "horizon_weeks": find_horizon(t),
         "pct_range": find_pct_range(t),
+        "quantity_units": find_capacity_statement(t),
         "line_name": find_line_name(t),
         "out_of_scope_action": oos_action,
         "week": find_week(t),
@@ -308,4 +320,7 @@ def parse(text: str) -> Parse:
         "code_cut": bool(re.search(r"\bcode\b|\breason\s+code\b|\bwhy\b.*\bcut\b", t)),
     }
     slots = {k: v for k, v in slots.items() if v not in (None, [], False)}
+    if no_keyword:
+        # Not a request on its own, but its details (LC, week, %...) may change the last one
+        return Parse("OUT_OF_SCOPE", 0.4, "no scenario keyword", slots)
     return Parse(label, 0.9 if len(hits) == 1 else 0.8, f"keywords: {', '.join(hits)}", slots)

@@ -51,6 +51,8 @@ test("S3: answers from inventory and plan, then uses entered capacity", async ({
   await lastBot(page).getByRole("button", { name: /Enter rated capacity for PL11/ }).click();
   await page.getByLabel("Rated capacity, units per month").fill("2000000");
   await page.getByRole("button", { name: "Save and continue" }).click();
+  await expect(page.locator(".typing")).toHaveCount(0, { timeout: 60_000 });
+  await expect(page.locator(".rail")).toContainText("PL11: 2,000,000");
   await page.getByLabel("Message").fill("Can we make 35% more 90 oz laundry sanitizer from November, six months out?");
   await page.getByLabel("Message").press("Enter");
   await expect(page.locator('[data-card="S3"]').first()).toContainText("690,804");
@@ -123,4 +125,24 @@ test("Network dashboard from the header", async ({ page }) => {
   const card = page.locator('[data-card="DASH"]');
   await expect(card).toContainText("Weeks of cover by segment and LC");
   await expect(card).toContainText("PL11");
+});
+
+test("Conversation keeps context: follow-up, why, draft, approve", async ({ page }) => {
+  await ready(page);
+  const ask = async (q: string) => {
+    await page.getByLabel("Message").fill(q);
+    await page.getByLabel("Message").press("Enter");
+    await expect(page.locator(".typing")).toHaveCount(0, { timeout: 60_000 });
+  };
+  await ask("Can we take 5k more cases of 3283407 at Vegas week of 10/19?");
+  await expect(page.locator('[data-card="S1"]').first()).toContainText("USQ4");
+  await ask("what about Atlanta?");
+  await expect(page.locator('[data-card="S1"]').first()).toContainText("+5,000 cases at USP8");
+  await ask("why does it drop?");
+  await expect(page.locator(".thread .msg.bot").last()).toContainText("From the last answer");
+  await ask("ok draft the replan");
+  await expect(page.locator(".thread .msg.bot").last()).toContainText("Drafted replan request");
+  await ask("approve it");
+  await expect(page.locator(".thread .msg").last()).toContainText("Approved");
+  await expect(page.locator(".rail")).toContainText("1 this session");
 });
