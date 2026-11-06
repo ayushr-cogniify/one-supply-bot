@@ -47,7 +47,9 @@ Examples:
 SLOTS
 Fill every slot. Never fill a slot from general knowledge. For anything not given use "" for text, "none" for choices, null for numbers, [] for lists and false for flags; missing is a valid answer.
 
-Items: item_text is the text span only (for example "4x90 Odor", "Crisp Linen 6x21", "3283407"). Never guess an item code. Leave it null when the message names a group or brand instead (for example "Lysol Sanitizers"), and put that in brand.
+Items: item_text is the text span only (for example "4x90 Odor", "Crisp Linen 6x21", "3283407"). Never guess an item code. Leave it "" when the message names a group, brand or category instead, and put that in brand.
+
+Brand (always fill it when the message names a category): laundry sanitizer, sanitizer, LLS -> "Lysol Sanitizers"; disinfecting spray, disinfectant, wipes, LDS -> "Lysol LDS". A category like "laundry sanitizer" is a brand, never an item_text.
 
 Weeks:
 - If the planner gives a date or a relative week ("week of 10/19", "next week"), return week.text and week.start_date, the Monday that starts that week (yyyy-mm-dd), resolved from Today in SESSION CONTEXT.

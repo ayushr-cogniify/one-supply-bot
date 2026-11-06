@@ -1,7 +1,7 @@
 import type { Session } from "./types";
 import { SUPABASE_URL, supabase } from "./auth";
 
-// Scope gate and slot extraction on Claude Haiku 5.5, through the osb-nlu Edge Function. The key
+// Scope gate and slot extraction on Claude (Opus 5.5), through the osb-nlu Edge Function. The key
 // stays in the function's secrets. Any failure or a slow answer returns null and the engine falls
 // back to its rules, so a planner never waits on the model.
 const NAMES: Record<string, string> = {
@@ -24,7 +24,7 @@ export async function understand(text: string, session: Session, snapshotStart: 
   const s = session as unknown as { pending?: { scenario?: string }; last?: { scenario?: string } };
   const active = s.pending?.scenario ?? s.last?.scenario;
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 8000);
+  const timer = setTimeout(() => ctl.abort(), 15000);   // Opus thinks first: allow up to 15 s
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/osb-nlu`, {
       method: "POST",

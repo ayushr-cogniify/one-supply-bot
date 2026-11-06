@@ -103,9 +103,9 @@ test("Claude understands loose wording (live osb-nlu)", async ({ page }) => {
   await page.getByLabel("Message").press("Enter");
   const card = page.locator('[data-card="S1"]');
   await expect(card).toContainText("Do not support without a replan");
-  await expect(page.locator(".rail")).toContainText("Claude Haiku 5.5");
+  await expect(page.locator(".rail")).toContainText("Claude Opus 5.5");
   await card.getByRole("button", { name: "Open trace" }).click();
-  await expect(page.getByRole("dialog")).toContainText("claude-haiku-5-5");
+  await expect(page.getByRole("dialog")).toContainText("claude-opus-5-5");
 });
 
 test("S5: ranked Kinaxis digest", async ({ page }) => {

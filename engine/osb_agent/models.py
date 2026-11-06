@@ -8,8 +8,8 @@ and templates do not change."""
 from . import nlu
 
 ROUTE = {
-    "scope_gate": {"model": "Claude Haiku 5.5", "endpoint": "databricks-claude-haiku-5-5"},
-    "slots": {"model": "Claude Haiku 5.5", "endpoint": "databricks-claude-haiku-5-5"},
+    "scope_gate": {"model": "Claude Opus 5.5", "endpoint": "claude-opus-5-5 (PRD: Haiku 5.5)"},
+    "slots": {"model": "Claude Opus 5.5", "endpoint": "claude-opus-5-5 (PRD: Haiku 5.5)"},
     "orchestrator": {"model": "Claude Sonnet 5.5", "endpoint": "databricks-claude-sonnet-5-5"},
     "s4_reasoning": {"model": "Claude Opus 5.5", "endpoint": "databricks-claude-opus-5-5"},
 }
@@ -22,8 +22,8 @@ def route() -> dict:
 
 
 RUNNING = {
-    "scope_gate": "Claude Haiku 5.5 (osb-nlu); rules engine if Claude is unavailable",
-    "slots": "Claude Haiku 5.5 (osb-nlu); rules engine if Claude is unavailable",
+    "scope_gate": "Claude Opus 5.5 (osb-nlu); rules engine if Claude is unavailable",
+    "slots": "Claude Opus 5.5 (osb-nlu); rules engine if Claude is unavailable",
     "orchestrator": "Code drafts the narrative from tool values; numeric validator checks it",
     "s4_reasoning": "Decision tree in code (Appendix C rules)",
 }
@@ -120,6 +120,12 @@ def scope_and_slots(text: str, external: dict = None) -> dict:
         return rules
     c = {**from_claude(external["parse"]), "engine": external.get("model") or "claude",
          "ms": external.get("ms"), "usage": external.get("usage")}
+    # Safety net: a brand or category the message plainly names is never dropped
+    if "brand" not in c["slots"] and rules["slots"].get("brand"):
+        c["slots"]["brand"] = rules["slots"]["brand"]
+        if c["slots"].get("item_text", "") in ("laundry sanitizer", "sanitizer", "sanitizers", "lysol sanitizers",
+                                                 "disinfecting spray", "lysol lds", "lds", "lls"):
+            c["slots"].pop("item_text")
     if c["confidence"] < MIN_CONFIDENCE and c["label"] not in ("OUT_OF_SCOPE",):
         if rules["label"] != "OUT_OF_SCOPE":
             return {**rules, "reason": f"Claude confidence {c['confidence']:.2f}; rules used"}

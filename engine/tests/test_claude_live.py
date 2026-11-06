@@ -1,5 +1,5 @@
 """The same planner flows with the live Claude gate: each message goes to the deployed osb-nlu Edge
-Function (Claude Haiku 5.5) as the signed-in test user, and its parse drives the pipeline exactly as
+Function (Claude Opus 5.5 by default) as the signed-in test user, and its parse drives the pipeline exactly as
 the browser does. Costs a few cents per run, so it only runs with OSB_LIVE_CLAUDE=1."""
 import json
 import os
@@ -77,7 +77,7 @@ def test_out_of_scope(chat, q):
 
 def test_e2_full_request(chat):
     chat.say("+5,000 cases of 3283407 at Vegas week of 10/19")
-    assert chat.gate()["engine"].startswith("claude")
+    assert chat.gate()["engine"] == "claude-opus-5-5"
     assert grid_cell(chat.card(), "USQ4", 0)["after"] == 0.3
 
 

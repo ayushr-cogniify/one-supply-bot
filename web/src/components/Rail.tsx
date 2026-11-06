@@ -170,7 +170,7 @@ export default function Rail({ gaps, session, info, cardsOpen, openGap, setOpenG
                 <div className="muted" style={{ fontSize: 11.5 }}>{m.stage === "scope_gate" || m.stage === "slots" ? "rules engine if Claude is unavailable" : `${m.model} in the Databricks build`}</div></dd>
             </div>
           ))}
-          <dt>Last answer</dt><dd><b>{session.last_route ? (session.last_route === "rules" ? "rules engine" : session.last_route.replace("claude-haiku-5-5", "Claude Haiku 5.5")) : "none yet"}</b></dd>
+          <dt>Last answer</dt><dd><b>{session.last_route ? (session.last_route === "rules" ? "rules engine" : session.last_route.replace(/^claude-(opus|sonnet|haiku)-(\d)-(\d)$/, (_, m, a, b) => `Claude ${m[0].toUpperCase()}${m.slice(1)} ${a}.${b}`)) : "none yet"}</b></dd>
         </dl>
       </div>
 
