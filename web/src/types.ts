@@ -60,7 +60,7 @@ export type Block =
   | { type: "banner"; tone: Tone; title: string; text?: string }
   | { type: "note"; tone?: string; title?: string; text: string }
   | { type: "table"; title?: string; tone?: string; columns: Column[]; rows: Record<string, unknown>[]; note?: string | null; collapsed?: boolean; text?: string }
-  | { type: "wocgrid"; title: string; single?: boolean; row_label?: string; weeks: { calweek: number; label: string }[]; rows: GridRow[]; note?: string }
+  | { type: "wocgrid"; title: string; single?: boolean; labels_only?: boolean; row_label?: string; weeks: { calweek: number; label: string }[]; rows: GridRow[]; note?: string }
   | { type: "pir"; title: string; weeks: { calweek: number; label: string }[]; rows: GridRow[]; note?: string }
   | { type: "path"; title: string; rows: { rule: string; test: string; result: string; result_label: string; evidence: string }[]; note?: string };
 

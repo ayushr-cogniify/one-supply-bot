@@ -74,23 +74,28 @@ def test_s1_odor_asks_item_then_week(chat):
     assert grid_cell(c, "NETWORK", 0)["after"] == 1.8
     assert any(m["kind"] == "echo" for m in chat.last["messages"])
     assert any(m["kind"] == "answer" and "Do not support" in m["text"] for m in chat.last["messages"])
-    assert "lookup_lane" in chat.tools()
+    assert chat.tools()[-1] == "assess_demand_change"
+    # Workflow S1 chain: why the LC drops, cases needed, and an option to cover it
+    why = next(b for b in c["blocks"] if b["type"] == "table" and b["title"].startswith("Why USQ4"))
+    assert why["rows"][0]["calweek"] == 202643 and why["rows"][0]["next_inbound_week"] == 202644
+    opts = next(b for b in c["blocks"] if b["type"] == "table" and b["title"] == "Options to cover it")
+    assert any(o["kind"] == "Factory replan" for o in opts["rows"])
+    answer = next(m["text"] for m in chat.last["messages"] if m["kind"] == "answer")
+    assert "USQ4 drops to 0.3 weeks from 2.5 in week 202643" in answer and "next inbound" in answer
 
 
-def test_s1_code_only_asks_week_then_scope(chat):
+def test_s1_code_only_asks_week_then_runs_network(chat):
     chat.say("Can we take +5,000 cases of 3283407?")
     assert "CLARIFY_WEEK" in chat.templates()
     chat.pick(202643, "calweek")
-    assert "CLARIFY_SCOPE" in chat.templates()
-    chat.pick("USQ4", "scope")
-    assert chat.card()["scenario"] == "S1"
+    c = chat.card()                                    # no LC named: the whole network, split by LC demand
+    assert c["scenario"] == "S1" and "network (by LC demand)" in c["subtitle"]
 
 
-def test_s1_network_needs_one_lc(chat):
+def test_s1_network_split_by_demand(chat):
     chat.say("+5,000 cases of 3283407 across the network week of 10/19")
-    assert "CLARIFY_SCOPE" in chat.templates()          # CLARIFY_LC uses the scope template
-    chat.pick("USQ4", "lc")
-    assert chat.card()["scenario"] == "S1"
+    v = chat.last["trace"]["results"][-1]["values"]
+    assert v["requested_scope"] == "NETWORK" and sum(v["split"].values()) == 5000
 
 
 def test_s1_full_request_needs_no_question(chat):
@@ -115,14 +120,11 @@ def test_cover_query_and_missing_item(chat):
 
 def test_question_cap(chat):
     chat.say("Can we take some cases of Odor?")
-    assert "CLARIFY_ITEM" in chat.templates()            # question 1: which item
-    chat.pick("3283407", "material")
-    assert "+5,000" in chat.last["messages"][-1]["text"]   # question 2: how many cases
-    chat.say("+5,000")
-    assert "CLARIFY_WEEK" in chat.templates()            # question 3: which week
-    chat.pick(202643, "calweek")
-    assert chat.templates() == ["TOO_MANY_QUESTIONS"]    # a fourth question is not asked
-    assert "the LC" in chat.last["messages"][0]["text"]  # it lists what is still needed
+    assert "CLARIFY_ITEM" in chat.templates()
+    chat.session["pending"]["questions"] = 3              # three questions already asked on this request
+    chat.pick("3283407", "material")                      # the next one (quantity) would be the fourth
+    assert chat.templates() == ["TOO_MANY_QUESTIONS"]
+    assert "the quantity in cases" in chat.last["messages"][0]["text"]
     assert chat.session["pending"] is None and not chat.last["cards"]
 
 
@@ -148,20 +150,24 @@ def test_s2_st_peters_asks_line(chat):
 
 
 # ---------- S3 ----------
-def test_s3_needs_capacity_then_computes_gap(chat):
+def test_s3_answers_without_capacity_then_uses_rated(chat):
     chat.say("Can we make 35% more 90 oz laundry sanitizer from November, six months out?")
     c = chat.card()
-    assert c["status"] == "needs_input" and "NO_DATA_CAPACITY" in chat.templates()
-    rows = block(c, "table")[0]["rows"]
-    assert rows[0]["month"] == "2026-11" and rows[0]["demand_units"] == 1588744 and rows[0]["grown_units"] == 2144804
-    gap = next(g for g in chat.last["gaps"] if g["id"] == "rated_capacity")
-    assert gap["state"] == "open" and gap["context"]["work_center"] == "PL11"
+    assert c["status"] == "ok" and "NO_DATA_CAPACITY" not in chat.templates()      # no dead end
+    kv = {i["label"]: i for i in block(c, "kv")[0]["items"]}
+    assert kv["Capacity basis"]["sub"] == "line's fixed plan, last 3 months"
+    cap = next(b for b in c["blocks"] if b["type"] == "table" and b["title"].startswith("Demand against"))
+    assert cap["rows"][0]["month"] == "2026-11" and cap["rows"][0]["demand_units"] == 1588744
+    assert cap["rows"][0]["grown_units"] == 2144804
+    cover = next(b for b in c["blocks"] if b["type"] == "table" and b["title"].startswith("Cover with the growth"))
+    assert cover["rows"]                                                               # inventory answer per item
     chat.send({"type": "gap_submit", "gap": "rated_capacity",
                "values": {"work_center": "PL11", "rated_capacity_units_per_month": 2000000, "unit_basis": "Bottles"}})
+    chat.say("Can we make 35% more 90 oz laundry sanitizer from November, six months out?")
     c2 = chat.card()
-    assert c2["id"] == c["id"] and c2["status"] == "ok"
-    nov = block(c2, "table")[0]["rows"][0]
-    assert nov["effective_capacity_units"] == 1454000 and nov["gap_units"] == 690804
+    cap2 = next(b for b in c2["blocks"] if b["type"] == "table" and b["title"].startswith("Demand against"))
+    nov = cap2["rows"][0]
+    assert nov["effective_capacity_units"] == 1454000 and nov["gap_units"] == 690804   # appendix E.4
     assert chat.session["supplements"]["Work_Centres"][0]["entered_by"] == "Demo planner"
 
 

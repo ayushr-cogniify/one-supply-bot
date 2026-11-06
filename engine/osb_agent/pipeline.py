@@ -486,7 +486,7 @@ def _save_pacing(t, p, step, val):
 
 # ---------- scenarios ----------
 def _advance(t, p):
-    return {"S1": _s1, "S2": _s2, "S3": _s3, "S4": _s4, "S5": _s5, "PIR": _pir}[p["scenario"]](t, p)
+    return {"S1": _s1, "S2": _s2, "S3": _s3, "S4": _s4, "S5": _s5, "PIR": _pir, "DASH": _dash}[p["scenario"]](t, p)
 
 
 def _done(t, p, card):
@@ -554,17 +554,29 @@ def _resolve_item(t, p, prompt="Which item? Give a GIC, UPC, GTIN or a descripti
     return False
 
 
+def _cover_params(t, sl):
+    window = int(sl.get("window_weeks") or 6)
+    horizon = int(sl.get("horizon_weeks") or t.s["weeks_shown"])
+    return max(2, min(window, 13)), max(4, min(horizon, 26))
+
+
 def _s1(t, p):
     sl, r = p["slots"], p["r"]
+    if not sl.get("item_text") and not r.get("material") and (sl.get("size_oz") or sl.get("brand")) \
+            and "delta_cases" not in sl and "pct" not in sl:
+        p["scenario"] = "PIR"                        # cover for a segment or brand, not one item
+        t.span("rerouted", to="PIR", reason="segment cover without an item")
+        return _pir(t, p)
     if not _resolve_item(t, p):
         return
     m = r["material"]
     desc = cx.item_desc(m)
+    window, horizon = _cover_params(t, sl)
     if sl.get("cover_query") and "delta_cases" not in sl and "pct" not in sl:
         locs = sl["lcs"] if sl.get("lcs") else ["NETWORK"] + list(cx.SITE_NAMES)
-        t.echo(f"Weeks of cover for {m} {desc} · {', '.join(locs)} · planned basis · "
-               f"{t.s['weeks_shown']} weeks")
-        res = t.tool("get_plan", material=m, locations=locs, weeks=t.s["weeks_shown"])
+        t.echo(f"Weeks of cover for {m} {desc} · {', '.join(locs)} · planned basis · {horizon} weeks shown · "
+               f"{window}-week forward demand")
+        res = t.tool("get_plan", material=m, locations=locs, weeks=horizon, window_weeks=window)
         if res["status"] != "ok":
             t.say(render("NO_DATA_ITEM", item_text=m), template="NO_DATA_ITEM")
             t.s["pending"] = None
@@ -584,36 +596,43 @@ def _s1(t, p):
             r["lc"] = r["scope"]
         elif len(lcs) == 1:
             r["lc"] = lcs[0]
-        elif sl.get("network") or r.get("scope") == "NETWORK":
-            return _ask(t, p, "lc", T["CLARIFY_LC"], template="CLARIFY_SCOPE", options=LC_OPTIONS)
         else:
-            return _ask(t, p, "scope", T["CLARIFY_SCOPE"], template="CLARIFY_SCOPE",
-                        options=[{"label": "Network", "value": "NETWORK"}] + [{"label": lc, "value": lc} for lc in cx.SITE_NAMES])
+            # No LC named: spread the change across the LCs by their demand that week (whole network)
+            r["lc"] = "NETWORK"
     lc, cw = r["lc"], int(r["calweek"])
     if "delta_cases" in sl:
         change, args = f"{cards.fmt_signed(int(sl['delta_cases']))} cases", {"delta_cases": int(sl["delta_cases"])}
     else:   # a % of demand: the tool converts it to cases, never the model
         change, args = f"{float(sl['pct']):+g}% of total demand in that week", {"delta_pct": float(sl["pct"])}
-    t.echo(f"Demand change for {m} {desc} · {change} · {lc} {cx.SITE_NAMES[lc]} · "
-           f"week {cw} ({cx.week_label(cw)}) · planned basis")
-    sim = t.tool("simulate_demand_change", material=m, scope=lc, week=cw, **args)
-    if sim["status"] != "ok":
-        t.s["pending"] = None
+    where = "whole network, split by each LC's demand that week" if lc == "NETWORK" else f"{lc} {cx.SITE_NAMES[lc]}"
+    t.echo(f"Demand change for {m} {desc} · {change} · {where} · week {cw} ({cx.week_label(cw)}) · "
+           f"on hand, in transit, firm and planned orders at all four LCs · {window}-week cover · {horizon} weeks")
+    res = t.tool("assess_demand_change", material=m, lc=lc, week=cw, window_weeks=window, horizon_weeks=horizon, **args)
+    t.s["pending"] = None
+    if res["status"] != "ok":
         t.say(render("NO_DATA_ITEM", item_text=m), template="NO_DATA_ITEM")
         return
-    lanes = []
-    if sim["values"]["verdict"] != "support":
-        for src in cx.lane_sources(m, lc):
-            ln = t.tool("lookup_lane", source=src, destination=lc, material=m)
-            if ln["status"] == "ok":
-                lanes.append(ln)
-    t.s["pending"] = None
-    _done(t, p, cards.s1(_new_card_id(t, p), m, desc, lc, cw, int(sim["values"]["delta_cases"]), sim, lanes))
+    _done(t, p, cards.s1_assess(_new_card_id(t, p), m, desc, res))
 
 
 def _s2(t, p):
     sl, r = p["slots"], p["r"]
     known = set(adapter.attainment().work_center.dropna())
+    # An item named with the attainment change: its line comes from the attainment history, and
+    # any extra cases ride on the same run (workflow: "can a +35k increase still be supported?")
+    if sl.get("item_text") and not r.get("material"):
+        if not _resolve_item(t, p):
+            return
+    if r.get("material") and "work_center" not in r and not sl.get("work_center"):
+        from osb_tools.attainment import lines_for_sku
+        active = set(cx.active_lines())               # lines with a plan in the latest 3 months
+        lines = [w for w in lines_for_sku(r["material"], since=202605) if w in active]
+        if len(lines) == 1:
+            r["work_center"] = lines[0]
+        elif lines:
+            return _ask(t, p, "work_center", render("CLARIFY_LINE", site=r["material"]), template="CLARIFY_LINE",
+                        options=[{"label": w, "value": w} for w in lines],
+                        note=f"{r['material']} runs on more than one active line.")
     if "work_center" not in r and sl.get("line_name"):
         alias = next((x for x in reversed(sup.live(t.s, "Work_Centres"))
                       if str(x.get("alias") or "").strip().lower() == sl["line_name"].lower()), None)
@@ -645,14 +664,26 @@ def _s2(t, p):
                 return _ask(t, p, "work_center", render("CLARIFY_LINE", site=site), template="CLARIFY_LINE", options=opts,
                             note="Trailing attainment is actuals over fixed volume for the latest 3 months.")
     wc = r["work_center"]
+    if sl.get("pct_reduction") is not None and "pct" not in r:
+        n = float(sl["pct_reduction"])
+        return _ask(t, p, "pct", f"Do you mean {wc} runs at {n:g}% attainment, or drops by {n:g} points to {100 - n:g}%?",
+                    template="CLARIFY_PCT", options=[{"label": f"Run at {n:g}%", "value": n},
+                                                     {"label": f"Run at {100 - n:g}%", "value": 100 - n}])
     if "pct" not in sl and "pct" not in r:
         return _ask(t, p, "pct", render("CLARIFY_PCT", work_center=wc), template="CLARIFY_PCT",
                     options=[{"label": f"{v}%", "value": v} for v in (70, 80, 90)])
     pct = float(r.get("pct", sl.get("pct")))
-    t.echo(f"Attainment change on {cx.wc_label(wc)} · {pct:g}% applied to planned and confirmed production · "
-           f"network weeks of cover · {t.s['weeks_shown']} weeks")
+    window, horizon = _cover_params(t, sl)
+    extra, extra_txt = None, ""
+    if r.get("material") and sl.get("delta_cases"):
+        cw = cx.calweek_for(sl.get("week")) or int(cx.cal().CALWEEK.iloc[0])
+        extra = {"material": r["material"], "week": cw, "delta_cases": int(sl["delta_cases"])}
+        extra_txt = f" · plus {cards.fmt_signed(int(sl['delta_cases']))} cases of {r['material']} in week {cw}"
+    t.echo(f"Attainment change on {cx.wc_label(wc)} · {pct:g}% applied to planned and confirmed production{extra_txt} · "
+           f"network weeks of cover · {horizon} weeks")
     att = t.tool("get_attainment", work_center=wc)
-    sim = t.tool("simulate_attainment", work_center=wc, attainment_pct=pct, horizon_weeks=t.s["weeks_shown"])
+    sim = t.tool("simulate_attainment", work_center=wc, attainment_pct=pct, horizon_weeks=horizon,
+                 **({"extra_demand": extra} if extra else {}))
     t.s["pending"] = None
     if sim["status"] != "ok":
         t.say(f"No SKU on {wc} has a Kinaxis plan to apply the attainment to.")
@@ -685,8 +716,11 @@ def _s3(t, p):
         return _ask(t, p, "growth", T["CLARIFY_GROWTH"], template="CLARIFY_GROWTH",
                     options=[{"label": f"+{v}%", "value": v} for v in (15, 25, 35)])
     growths = [float(g) for g in r.get("growth_list") or [r.get("growth", sl.get("pct"))]]
-    growth = max(growths)
-    months = int(sl.get("months") or 6)
+    window, _ = _cover_params(t, sl)
+    month_from = f"{sl['month'][0] or cx.snapshot_date().year}-{int(sl['month'][1]):02d}" if sl.get("month") else None
+    cover_months = int(sl.get("months") or (1 if month_from else 3))
+    months_label = (f"{cover_months} month{'s' if cover_months > 1 else ''} from {month_from}" if month_from
+                    else f"next {cover_months} months")
     mats = select_materials(r["selector"].get("consumer_size"))
     wc = r.get("work_center") or sl.get("work_center") or cx.line_for_materials(mats)
     if not wc:
@@ -694,31 +728,16 @@ def _s3(t, p):
         t.say("None of these items has a factory line in the attainment history, so capacity cannot be checked.")
         return
     r["work_center"] = wc
-    cap = sup.latest(t.s, "Work_Centres", work_center=wc)
-    if not p.get("echoed"):
-        t.echo(f"Capacity check for {r['label']} · growth "
-               f"{' and '.join(cards.fmt_signed(g) + '%' for g in growths)} · {months} months from "
-               f"the snapshot · line {wc} · attainment: trailing 3 months · cases to units with CASETOEACH")
-        p["echoed"] = True
+    t.echo(f"Segment growth for {r['label']} · {' and '.join(cards.fmt_signed(g) + '%' for g in growths)} · "
+           f"{months_label} · inventory and cover at all four LCs, then line {wc} capacity · cases to units with CASETOEACH")
     att = t.tool("get_attainment", work_center=wc)
-    if not cap:
-        dem = t.tool("segment_demand", selector=r["selector"], growth_pct=growth, months=months)
-        if dem["status"] != "ok":
-            t.s["pending"] = None
-            t.say("No demand found for that segment at the four LCs.")
-            return
-        card = cards.s3(_new_card_id(t, p), r["label"], growth, wc, att, demand_res=dem)
-        _done(t, p, card)
-        p["awaiting"] = "gap:rated_capacity"
-        p.setdefault("trace_ids", []).append(t.trace_id)
-        p["gap_context"] = {"work_center": wc, "factory_site": cx.wc_label(wc)}
-        t.s["pending"] = p
-        t.say(render("NO_DATA_CAPACITY", work_center=wc), template="NO_DATA_CAPACITY",
-              options=[{"label": f"Enter capacity for {wc}", "primary": True,
-                        "action": {"type": "open_gap", "gap": "rated_capacity"}}],
-              note=f"Trailing 3-month attainment on {wc} is {att['values']['trailing_avg_pct']}%. "
-                   "I will not enter a capacity for you.")
-        return
+    cap = sup.latest(t.s, "Work_Centres", work_center=wc)
+    plan_res = None
+    if cap:
+        basis, cap_value = "rated", float(cap["rated_capacity_units_per_month"])
+    else:
+        plan_res = t.tool("line_plan_capacity", work_center=wc)
+        basis, cap_value = "plan", float(plan_res["values"].get("avg_fixed_units_per_month") or 0)
     lanes, seen = [], set()
     for row in cx.make_buy_lanes(mats).sort_values("LEADTIME DAYS").itertuples():
         key = (row.SOURCE_SITE, row.DESTINATION_SITE)
@@ -732,12 +751,27 @@ def _s3(t, p):
             break
     t.s["pending"] = None
     for i, g in enumerate(growths):     # one card per growth value (both ends of a range)
-        gap = t.tool("capacity_gap", selector=r["selector"], growth_pct=g, months=months, work_center=wc,
-                     rated_capacity_units=float(cap["rated_capacity_units_per_month"]))
+        cover = t.tool("segment_growth_cover", selector=r["selector"], growth_pct=g, month_from=month_from,
+                       months=cover_months, window_weeks=window)
+        gap = t.tool("capacity_gap", selector=r["selector"], growth_pct=g, months=int(sl.get("months") or 6),
+                     work_center=wc, rated_capacity_units=cap_value)
+        if cover["status"] != "ok" or gap["status"] != "ok":
+            t.say("No demand found for that segment at the four LCs.")
+            return
         cid = _new_card_id(t, p) if i == 0 else f"{_new_card_id(t, p)}-{i + 1}"
-        card = cards.s3(cid, r["label"], g, wc, att, gap_res=gap, lanes=lanes,
-                        capacity={"value": float(cap["rated_capacity_units_per_month"]), "row": cap["row_id"]})
-        _done(t, p, card)
+        _done(t, p, cards.s3_full(cid, r["label"], g, months_label, wc, att, cover, gap, basis, cap_value, plan_res, lanes))
+    if basis == "plan":
+        t.say(f"Rated capacity for {wc} is not in the extracts, so I used its average fixed plan as the reference. "
+              "Enter the rated capacity if you have it and I will rerun.",
+              options=[{"label": f"Enter rated capacity for {wc}", "action": {"type": "open_gap", "gap": "rated_capacity"}}])
+
+
+def _dash(t, p):
+    window, _ = _cover_params(t, p["slots"])
+    t.echo(f"Network dashboard · every segment and LC · first plan week · {window}-week cover · factory lines")
+    res = t.tool("network_dashboard", window_weeks=window)
+    t.s["pending"] = None
+    _done(t, p, cards.dashboard(_new_card_id(t, p), res))
 
 
 def _period(y, m):
@@ -944,7 +978,14 @@ def _pir(t, p):
     if item_text and not r.get("material"):
         if not _resolve_item(t, p):
             return
-    if r.get("material"):
+    if sl.get("size_oz") and not r.get("material") and not r.get("pir_scope"):
+        size = float(sl["size_oz"])
+        mats = [m for m in select_materials(int(size) if size.is_integer() else size)
+                if adapter.kinaxis_plan().pipe(lambda d: d[(d.MATERIAL == m) & d.LOCATION.isin(config.LCS)].TOTAL_DEMAND.sum()) > 0]
+        r["pir_label"] = f"{size:g} oz {sl.get('brand') or 'segment'}"
+    if mats:
+        pass
+    elif r.get("material"):
         mats = [r["material"]]
     elif r.get("pir_scope") == "PIR items" or (sl.get("pir_items") and sup.live(t.s, "PIR_List") and not sl.get("brand")):
         mats = list(dict.fromkeys(x["item"] for x in sup.live(t.s, "PIR_List")))
@@ -955,10 +996,10 @@ def _pir(t, p):
         if sup.live(t.s, "PIR_List"):
             opts.append({"label": "My PIR items", "value": "PIR items"})
         return _ask(t, p, "pir_scope", "Which items should the report cover?", options=opts)
-    weeks = t.s["weeks_shown"]
-    label = group or (f"{mats[0]} {cx.item_desc(mats[0]) or ''}".strip() if len(mats) == 1 else f"{len(mats)} PIR items")
-    t.echo(f"Projected inventory report · {label} · four LCs, network and group · {weeks} weeks · planned basis")
-    res = t.tool("pir_report", materials=mats, bsg_group=group, horizon_weeks=weeks)
+    window, weeks = _cover_params(t, sl)
+    label = r.get("pir_label") or group or (f"{mats[0]} {cx.item_desc(mats[0]) or ''}".strip() if len(mats) == 1 else f"{len(mats)} PIR items")
+    t.echo(f"Projected inventory report · {label} · four LCs, network and group · {weeks} weeks · {window}-week cover · planned basis")
+    res = t.tool("pir_report", materials=mats, bsg_group=group, horizon_weeks=weeks, window_weeks=window)
     t.s["pending"] = None
     if res["status"] != "ok":
         t.say("No Kinaxis plan rows for that selection.")

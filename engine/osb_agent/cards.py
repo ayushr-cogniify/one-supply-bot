@@ -9,6 +9,7 @@ from . import context as cx
 from .validator import validate
 
 TITLES = {
+    "DASH": "Network dashboard",
     "S1": "In-month demand spike",
     "S1P": "Weeks of cover",
     "S2": "Factory attainment drop",
@@ -18,7 +19,7 @@ TITLES = {
     "S5": "What changed this week",
     "PIR": "Projected inventory report",
 }
-TAG = {"S1P": "S1", "S4P": "S4"}
+TAG = {"S1P": "S1", "S4P": "S4", "DASH": "NET"}
 
 COLOUR_WORD = {"red": "red", "yellow": "yellow", "green": "green", "blue": "blue", "n/a": "no cover"}
 VERDICT = {"do_not_support": "Do not support without a replan.",
@@ -237,6 +238,14 @@ def s2(card_id, wc, pct, att_res, sim) -> dict:
     narrative = (f"At {pct:g}% attainment {wc} loses {fmt_int(sv['production_shortfall_cases'])} cases of production "
                  f"over the weeks shown. Trailing 3-month attainment is {av['trailing_avg_pct']}%. ")
     narrative += (f"SKUs that turn red: {', '.join(below)}." if below else "No SKU turns red at network level.")
+    ex = sv.get("extra_demand")
+    if ex:
+        m, wk = str(ex["material"]), int(ex["week"])
+        r0 = by.get(m, {}).get(wk)
+        if r0:
+            narrative += (f" With {fmt_signed(ex['delta_cases'])} cases of {m} in week {wk} on top, {m} goes from "
+                          f"{r0['woc_before']} to {r0['woc_after']} weeks of network cover that week "
+                          f"({COLOUR_WORD.get(r0['colour_after'], '')}).")
     card = {"id": card_id, "scenario": "S2", "status": "ok",
             "subtitle": f"{cx.wc_label(wc)} \u00b7 {pct:g}% attainment \u00b7 network level", "blocks": blocks}
     if below:
@@ -623,3 +632,215 @@ def pir(card_id, label, res, materials_desc) -> dict:
     card = {"id": card_id, "scenario": "PIR", "status": "ok", "subtitle": f"{label} · {len(weeks)} weeks · planned basis",
             "blocks": blocks, "export": {"filename": f"PIR_{label.replace(' ', '_')}.xlsx", "rows": rows}}
     return finish(card, [res], narrative)
+
+
+# ---------- S1, end to end (workflow doc, Scenario 1) ----------
+def s1_assess(card_id, material, desc, res) -> dict:
+    v = res["values"]
+    lc, week = v["lc"], v["week"]
+    rows = rows_of(res)
+    weeks = sorted({r["calweek"] for r in rows})
+    by = defaultdict(dict)
+    for r in rows:
+        by[r["location"]][r["calweek"]] = r
+    order = [x for x in cx.SITE_NAMES if x in by] + ["NETWORK"]
+    grid = [{"loc": loc, "name": "US network" if loc == "NETWORK" else cx.SITE_NAMES[loc], "changed": loc in (lc, "NETWORK"),
+             "cells": [{"before": by[loc].get(w, {}).get("woc_before"), "after": by[loc].get(w, {}).get("woc_after"),
+                        "cb": by[loc].get(w, {}).get("colour_before"), "ca": by[loc].get(w, {}).get("colour_after")}
+                       for w in weeks]} for loc in order]
+    su = v["support_until"]["lc"]
+    tone = {"do_not_support": "bad", "support_with_replan": "warn", "support": "good"}[v["verdict"]]
+    already = bool(v["dips"]) and v["dips"][0].get("colour_before") == "red"
+    title = {"do_not_support": "Do not support without a replan.",
+             "support_with_replan": (f"The network can absorb it, but {lc} is already red and goes lower: replan needed."
+                                     if already else f"Supportable at network level, but {lc} goes red: replan needed."),
+             "support": "Supportable from planned stock."}[v["verdict"]]
+    if su["first_red"] is None:
+        sup_txt = f"{lc} stays out of red through week {su['through']}."
+    elif su["through"] is None:
+        sup_txt = f"{lc} is red from week {su['first_red']}, the week of the change."
+    else:
+        sup_txt = f"{lc} can support it through week {su['through']}; red from week {su['first_red']}."
+    flagged = [f for f in v["flagged_locations"] if f != lc]
+    blocks = [
+        {"type": "kv", "items": [
+            {"label": "Item", "value": material, "sub": desc},
+            {"label": "Change", "value": f"{fmt_signed(v['delta_cases'])} cases",
+             "sub": (f"{v['delta_pct']:+g}% of {fmt_int(v['base_demand_cases'])} cases demand · " if v.get("delta_pct") is not None else "")
+                    + f"week {week} · {cx.week_label(week)}"},
+            ({"label": "Lands at", "value": lc, "sub": cx.SITE_NAMES[lc]} if v.get("requested_scope") != "NETWORK" else
+             {"label": "Spread across", "value": "Network", "sub": " · ".join(f"{k} {fmt_signed(c)}" for k, c in v["split"].items())}),
+            {"label": "Cover window", "value": f"{v['window_weeks']} weeks", "sub": "average forward total demand"}]},
+        {"type": "banner", "tone": tone, "title": title,
+         "text": f"Network cover {v['network_before']} → {v['network_after']} weeks. {sup_txt}"
+                 + (f" Also flagged: {', '.join(flagged)}." if flagged else "")},
+        {"type": "wocgrid", "title": "Weeks of cover by LC, before → after",
+         "weeks": [{"calweek": w, "label": cx.week_label(w)} for w in weeks], "rows": grid,
+         "note": f"WoC = projected stock in the week / average total demand of the next {v['window_weeks']} weeks "
+                 "(Kinaxis plan: on hand, in transit, firm and planned orders). Under 2 red, 2 to 3.9 yellow, 4 to 5.0 green, above 5.0 blue."},
+    ]
+    if v["dips"]:
+        blocks.append({"type": "table", "title": f"Why {lc} cover drops", "columns": [
+            {"key": "calweek", "label": "Week"}, {"key": "woc_after", "label": "WoC after", "format": "woc", "colour_key": "colour_after"},
+            {"key": "stock_after", "label": "Projected stock", "format": "int"}, {"key": "supply", "label": "Supply that week", "format": "int"},
+            {"key": "demand", "label": "Demand that week", "format": "int"}, {"key": "next_inbound_week", "label": "Next inbound week"},
+            {"key": "next_inbound_cases", "label": "Next inbound, cases", "format": "int"}],
+            "rows": v["dips"], "note": f"Cases {lc} needs to stay at 2 weeks or more in every week shown: "
+                                       f"{fmt_int(v['cases_to_stay_out_of_red'])}."})
+    opts = [{"source": f"{d['location']} {cx.SITE_NAMES[d['location']]}", "kind": "Transfer from LC",
+             "available": d["excess_above_4_weeks"] or d["excess_above_2_weeks"],
+             "basis": "above 4 weeks of cover" if d["excess_above_4_weeks"] else "above 2 weeks (donor goes yellow)",
+             "leadtime_days": d["leadtime_days"], "arrives_week": d["arrives_week"],
+             "cost": f"{d['mode'].lower()} {fmt_int(d['cost_per_load'])} USD/load" if d.get("cost_per_load") else "not on file"}
+            for d in v["donors"]]
+    opts += [{"source": f"{f['site']} factory", "kind": "Factory replan", "available": f["planned_cases"],
+              "basis": f"planned production in weeks {', '.join(str(w) for w in f['weeks_with_production'][:4])}",
+              "leadtime_days": f["leadtime_days"], "arrives_week": None, "cost": "replan request"} for f in v["factory"]]
+    if opts and v["verdict"] != "support":
+        blocks.append({"type": "table", "title": "Options to cover it", "columns": [
+            {"key": "source", "label": "Source"}, {"key": "kind", "label": "Action"}, {"key": "available", "label": "Cases", "format": "int"},
+            {"key": "basis", "label": "Basis"}, {"key": "leadtime_days", "label": "Lead time, days"},
+            {"key": "arrives_week", "label": "Arrives week"}, {"key": "cost", "label": "Cost"}], "rows": opts,
+            "note": "Donor stock keeps the donor LC at or above the threshold shown. Shuttles, STOs and factory requests are drafts for your approval; nothing is created."})
+    elif v["verdict"] != "support":
+        blocks.append({"type": "note", "tone": "info", "text": "No LC holds stock above 2 weeks of cover and no factory production is planned for this item in the horizon. Escalate as a constraint."})
+    # Narrative (workflow doc output): verdict, network move, LC dip with reason, support-until, options
+    n = [title, f"Network cover moves from {v['network_before']} to {v['network_after']} weeks ({COLOUR_WORD.get(v['network_colour_after'], '')})."]
+    if v["dips"]:
+        d = v["dips"][0]
+        why = (f"demand of {fmt_int(d['demand'])} cases against {fmt_int(d['supply'])} cases of supply"
+               if d["demand"] > d["supply"] else f"projected stock of {fmt_int(d['stock_after'])} cases")
+        inbound = (f"; the next inbound of {fmt_int(d['next_inbound_cases'])} cases lands in week {d['next_inbound_week']}"
+                   if d["next_inbound_week"] else "; no inbound lands in the horizon")
+        was = (f" (already {COLOUR_WORD[d['colour_before']]} at {d['woc_before']} weeks before the change)"
+               if d.get("colour_before") == "red" else f" from {d['woc_before']}")
+        n.append(f"{lc} drops to {d['woc_after']} weeks{was} in week {d['calweek']}: {why}{inbound}.")
+    n.append(sup_txt)
+    if v["verdict"] != "support":
+        if v["cases_to_stay_out_of_red"]:
+            n.append(f"{lc} needs {fmt_int(v['cases_to_stay_out_of_red'])} more cases to stay at 2 weeks or more.")
+        if v["donors"]:
+            d = v["donors"][0]
+            avail = d["excess_above_4_weeks"] or d["excess_above_2_weeks"]
+            floor = "4" if d["excess_above_4_weeks"] else "2"
+            need = v["cases_to_stay_out_of_red"]
+            ship = need if need and need <= avail else avail
+            first_red = v["support_until"]["lc"]["first_red"]
+            late = (d["arrives_week"] is not None and first_red is not None and d["arrives_week"] > first_red)
+            lane = (f", {d['leadtime_days']} days, arriving week {d['arrives_week']}"
+                    + (f", after the first red week {first_red}" if late else "") if d["leadtime_days"] is not None
+                    else ", no lane on file for this item")
+            n.append(f"Options: ship {fmt_int(ship)} cases from {d['location']} (it holds {fmt_int(avail)} above "
+                     f"{floor} weeks of cover{lane})"
+                     + (f", or a factory replan at {v['factory'][0]['site']}." if v["factory"] else "."))
+        elif v["factory"]:
+            f = v["factory"][0]
+            n.append(f"No LC has spare stock; suggest a factory replan at {f['site']}, which has {fmt_int(f['planned_cases'])} cases planned in the horizon.")
+    card = {"id": card_id, "scenario": "S1", "status": "ok",
+            "subtitle": f"{material} {desc or ''} · {fmt_signed(v['delta_cases'])} cases at "
+                        f"{'the network (by LC demand)' if v.get('requested_scope') == 'NETWORK' else lc} · week {week} · {v['window_weeks']}-week cover",
+            "blocks": blocks}
+    if v["verdict"] != "support":
+        card["replan"] = {"scenario": "S1", "text": " ".join(n[1:]) + " Please confirm a replan or transfer."}
+    return finish(card, [res], " ".join(n))
+
+
+# ---------- S3, end to end (inventory support, then capacity) ----------
+def s3_full(card_id, label, growth, months_label, wc, att_res, cover_res, gap_res, cap_basis, cap_value, plan_res=None, lanes=None):
+    cv, av, gv = cover_res["values"], att_res["values"], gap_res["values"]
+    items = rows_of(cover_res)
+    for r in items:
+        r["description"] = cx.item_desc(r["material"]) or ""
+        r["lcs"] = ", ".join(r["lcs_turning_red"]) if r["lcs_turning_red"] else "none"
+    rows = rows_of(gap_res)
+    first = gv["first_constrained_month"]
+    inv_ok = cv["supported"]
+    blocks = [
+        {"type": "kv", "items": [
+            {"label": "Segment", "value": label, "sub": f"{cv['items']} items with demand"},
+            {"label": "Growth", "value": f"{fmt_signed(growth)}%", "sub": months_label},
+            {"label": "Line", "value": wc, "sub": cx.wc_label(wc).split(" · ", 1)[1]},
+            {"label": "Capacity basis", "value": f"{fmt_int(cap_value)} units/mo",
+             "sub": "planner-entered rated capacity" if cap_basis == "rated" else "line's fixed plan, last 3 months",
+             "badge": "planner" if cap_basis == "rated" else None}]},
+        {"type": "banner", "tone": "good" if inv_ok else "bad",
+         "title": "Current inventory and cover support the growth" if inv_ok else
+                  f"Current inventory does not support it: {len(cv['items_red_network'])} items go red at network level",
+         "text": f"{fmt_int(cv['extra_cases_total'])} extra cases of demand across the segment. "
+                 + ("" if inv_ok else f"Items red at network level: {', '.join(cv['items_red_network'][:6])}.")},
+        {"type": "table", "title": "Cover with the growth, by item (network, lowest week in the growth months)",
+         "columns": [{"key": "material", "label": "Item"}, {"key": "description", "label": "Description"},
+                     {"key": "extra_cases", "label": "Extra cases", "format": "int"},
+                     {"key": "network_min_before", "label": "WoC before", "format": "woc", "colour_key": "colour_before"},
+                     {"key": "network_min_after", "label": "WoC after", "format": "woc", "colour_key": "colour_after"},
+                     {"key": "lcs", "label": "LCs turning red"}, {"key": "first_red_week", "label": "First red week"}],
+         "rows": items, "note": f"Growth applied to each item's total demand at every LC in {', '.join(cv['months'])}, carried through "
+                                f"projected stock; WoC on a {cv['window_weeks']}-week forward window. No forecast beyond the Kinaxis plan."},
+        {"type": "banner", "tone": "bad" if first else "good",
+         "title": f"{wc} is short from {first}" if first else f"Demand fits within {wc} effective capacity",
+         "text": f"Effective capacity {fmt_int(gv['effective_capacity_units'])} units/month = {fmt_int(cap_value)} × "
+                 f"{av['trailing_avg_pct']}% trailing attainment."
+                 + ("" if cap_basis == "rated" else " Rated capacity is not in the extracts; the line's average fixed plan is used. "
+                                                     "Enter rated capacity in Data Gaps to replace it.")},
+        {"type": "table", "title": "Demand against effective capacity, units",
+         "columns": [{"key": "month", "label": "Month"}, {"key": "demand_cases", "label": "Cases", "format": "int"},
+                     {"key": "demand_units", "label": "Units", "format": "int"},
+                     {"key": "grown_units", "label": f"Units at {fmt_signed(growth)}%", "format": "int", "strong": True},
+                     {"key": "effective_capacity_units", "label": "Effective capacity", "format": "int"},
+                     {"key": "gap_units", "label": "Gap", "format": "gap"}], "rows": rows,
+         "note": "Units = cases × case-to-each (SAP Item Master). Months bucketed by the month each Kinaxis week ends in."},
+    ]
+    lane_rows = [{"source": l["values"]["source"], "type": l["values"].get("type"), "leadtime_days": l["values"].get("leadtime_days"),
+                  "min_qty": l["values"].get("min_qty")} for l in (lanes or [])]
+    if first and lane_rows:
+        blocks.append({"type": "table", "title": "Sources for the gap", "tone": "dashed",
+                       "columns": [{"key": "source", "label": "Source"}, {"key": "type", "label": "Lane"},
+                                   {"key": "leadtime_days", "label": "Lead time, days", "format": "int"},
+                                   {"key": "min_qty", "label": "Minimum, cases", "format": "int"}], "rows": lane_rows,
+                       "note": "Make and Buy lanes for the segment's items, by lead time. Cost per unit is not on file."})
+    n = []
+    n.append(f"{label} at {fmt_signed(growth)}%: " + ("current inventory and cover support it." if inv_ok else
+             f"current inventory does not support it; {len(cv['items_red_network'])} items go red at network level "
+             f"({', '.join(cv['items_red_network'][:3])})."))
+    if first:
+        r0 = next(r for r in rows if r["month"] == first)
+        n.append(f"On capacity, {wc} is short from {first}: {fmt_int(r0['grown_units'])} units of demand against "
+                 f"{fmt_int(gv['effective_capacity_units'])} units of effective capacity, a gap of {fmt_int(r0['gap_units'])} units.")
+    else:
+        n.append(f"Demand fits within {fmt_int(gv['effective_capacity_units'])} units of effective capacity on {wc}.")
+    res = [cover_res, att_res, gap_res] + ([plan_res] if plan_res else []) + list(lanes or [])
+    card = {"id": card_id, "scenario": "S3", "status": "ok",
+            "subtitle": f"{label} · {fmt_signed(growth)}% · {months_label} · line {wc}", "blocks": blocks}
+    return finish(card, res, " ".join(n))
+
+
+# ---------- Network dashboard ----------
+def dashboard(card_id, res) -> dict:
+    v = res["values"]
+    seg = rows_of(res)
+    grid = [{"loc": r["segment"], "name": f"{r['items']} items", "changed": False,
+             "cells": [{"after": r.get(loc), "ca": colour_of(r.get(loc))} for loc in list(cx.SITE_NAMES) + ["NETWORK"]]}
+            for r in seg]
+    lines = v["lines"]
+    blocks = [
+        {"type": "kv", "items": [{"label": f"Red items · {x['location']}", "value": str(x["items_red"]),
+                                  "sub": cx.SITE_NAMES[x["location"]]} for x in v["red_items_by_lc"]]},
+        {"type": "wocgrid", "title": f"Weeks of cover by segment and LC, week {v['calweek']} ({cx.week_label(v['calweek'])})",
+         "single": True, "row_label": "Segment", "labels_only": True,
+         "weeks": [{"calweek": i, "label": n} for i, n in enumerate(list(cx.SITE_NAMES.values()) + ["Network"])],
+         "rows": grid, "note": f"Segment = BSG group and consumer size. WoC on the summed segment, {v['window_weeks']}-week forward demand."},
+        {"type": "table", "title": "Factory lines, trailing 3-month attainment",
+         "columns": [{"key": "work_center", "label": "Line"}, {"key": "factory", "label": "Factory"},
+                     {"key": "trailing_pct", "label": "Attainment", "format": "pct1"},
+                     {"key": "fixed_cases_3m", "label": "Fixed, 3 months", "format": "int"},
+                     {"key": "actual_cases_3m", "label": "Actual, 3 months", "format": "int"}], "rows": lines,
+         "note": "Rated line capacity is not in the extracts; enter it in Data Gaps to see headroom by line."},
+    ]
+    card = {"id": card_id, "scenario": "DASH", "status": "ok",
+            "subtitle": f"Kinaxis snapshot {cx.snapshot_label()} · week {v['calweek']} · planned basis", "blocks": blocks}
+    return finish(card, [res], None)
+
+
+def colour_of(w):
+    from osb_tools.woc import colour
+    return colour(w)

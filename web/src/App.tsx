@@ -224,6 +224,7 @@ function Planner({ auth }: { auth: AuthSession }) {
         <div className="hdr-right">
           <span className="who">{auth.user.email} {"·"} Desk: LDS + Sanitizers</span>
           <span className="pill">Kinaxis snapshot {info.snapshot} {"·"} SAP stock to {info.stock_to}</span>
+          <button className="btn" disabled={busy} onClick={() => send("Give me the network dashboard")}>Network dashboard</button>
           <button className="btn" onClick={() => setAdmin(true)}>Admin</button>
           <button className="linkbtn" title={auth.user.email} onClick={signOut}>Sign out</button>
         </div>

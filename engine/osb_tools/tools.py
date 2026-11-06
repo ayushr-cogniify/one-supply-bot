@@ -1,6 +1,7 @@
 """Tool registry for the orchestrator: name -> (function, JSON schema). The agent may only call
 these. Schemas follow Engineering appendix B.2 (trimmed to what is implemented)."""
 from .attainment import get_attainment, simulate_attainment
+from .assess import assess_demand_change, line_plan_capacity, network_dashboard, segment_growth_cover
 from .capacity import capacity_gap, segment_demand
 from .cuts import cuts_pareto, get_cut_line, list_cut_lines
 from .decision_tree import walk_decision_tree
@@ -16,14 +17,14 @@ LC_ENUM = config.LCS
 MAT = {"type": "string", "pattern": "^[0-9]{7}$"}
 
 
-def get_plan(material: str, locations: list, weeks: int = 8) -> dict:
+def get_plan(material: str, locations: list, weeks: int = 8, window_weeks: int = config.WOC_WINDOW_WEEKS) -> dict:
     plan = adapter.kinaxis_plan()
     out = []
     for loc in locations:
         s = series(plan, material, loc)
         if s.empty:
             continue
-        s = add_woc(s).head(weeks)
+        s = add_woc(s, window_weeks).head(weeks)
         for r in s.itertuples():
             out.append({"location": loc, "calweek": int(r.CALWEEK), "stock_planned": int(r.STOCK_PLANNED),
                         "total_demand": float(r.TOTAL_DEMAND), "total_supply": float(r.TOTAL_SUPPLY),
@@ -36,14 +37,14 @@ def get_plan(material: str, locations: list, weeks: int = 8) -> dict:
 
 
 def pir_report(materials: list = None, bsg_group: str = None, locations: list = None,
-               start_week: int = None, horizon_weeks: int = 12) -> dict:
+               start_week: int = None, horizon_weeks: int = 12, window_weeks: int = config.WOC_WINDOW_WEEKS) -> dict:
     pir = generate_pir(materials=materials, bsg_group=bsg_group, locations=locations,
-                       start_week=start_week, horizon_weeks=horizon_weeks)
+                       start_week=start_week, horizon_weeks=horizon_weeks, window_weeks=window_weeks)
     if pir.empty:
         return envelope("pir_report", "no_data")
     pir["week_start"] = pir.week_start.astype(str)
     return envelope("pir_report", values={"materials": materials, "bsg_group": bsg_group,
-                                          "horizon_weeks": horizon_weeks}, table=table(pir))
+                                          "horizon_weeks": horizon_weeks, "window_weeks": window_weeks}, table=table(pir))
 
 
 TOOLS = {
@@ -51,12 +52,23 @@ TOOLS = {
         "text": {"type": "string"}, "scope": {"type": "string", "enum": ["Lysol LDS", "Lysol Sanitizers", "both"]}}}),
     "get_plan": (get_plan, {"type": "object", "required": ["material", "locations"], "properties": {
         "material": MAT, "locations": {"type": "array", "items": {"type": "string", "enum": LC_ENUM + ["NETWORK"]}},
-        "weeks": {"type": "integer", "maximum": 26}}}),
+        "weeks": {"type": "integer", "maximum": 26}, "window_weeks": {"type": "integer"}}}),
     "simulate_demand_change": (simulate_demand_change, {"type": "object",
         "required": ["material", "scope", "week"], "properties": {
         "material": MAT, "scope": {"type": "string", "enum": LC_ENUM + ["NETWORK"]},
         "week": {"type": "integer"}, "delta_cases": {"type": "integer"},
         "delta_pct": {"type": "number", "description": "Change as % of the item's total demand at the LC that week"}}}),
+    "assess_demand_change": (assess_demand_change, {"type": "object", "required": ["material", "lc", "week"], "properties": {
+        "material": MAT, "lc": {"type": "string", "enum": LC_ENUM + ["NETWORK"]}, "week": {"type": "integer"},
+        "delta_cases": {"type": "integer"}, "delta_pct": {"type": "number"},
+        "window_weeks": {"type": "integer", "minimum": 2, "maximum": 13}, "horizon_weeks": {"type": "integer", "maximum": 26}}}),
+    "segment_growth_cover": (segment_growth_cover, {"type": "object", "required": ["selector", "growth_pct"], "properties": {
+        "selector": {"type": "object"}, "growth_pct": {"type": "number"}, "month_from": {"type": "string"},
+        "months": {"type": "integer"}, "window_weeks": {"type": "integer"}}}),
+    "line_plan_capacity": (line_plan_capacity, {"type": "object", "required": ["work_center"], "properties": {
+        "work_center": {"type": "string"}, "months": {"type": "integer"}}}),
+    "network_dashboard": (network_dashboard, {"type": "object", "properties": {
+        "week_index": {"type": "integer"}, "window_weeks": {"type": "integer"}}}),
     "get_attainment": (get_attainment, {"type": "object", "required": ["work_center"], "properties": {
         "work_center": {"type": "string"}, "months": {"type": "integer", "maximum": 22}}}),
     "simulate_attainment": (simulate_attainment, {"type": "object", "required": ["work_center", "attainment_pct"],
@@ -95,6 +107,10 @@ DESCRIPTIONS = {
     "resolve_item": "Resolve the planner's words (code, UPC, GTIN or description) to a 7-digit material. Always call before any item-level tool.",
     "get_plan": "Weekly projected stock, demand, supply and weeks of cover for one material at LCs or NETWORK.",
     "simulate_demand_change": "S1: weeks of cover before/after extra demand (signed cases) at one LC in one Kinaxis week.",
+    "assess_demand_change": "S1 end to end: WoC per LC and network before/after, support-until week, why each dip happens, cases needed, donor LCs and factory supply.",
+    "segment_growth_cover": "S3 demand side: does current inventory and cover support a segment's growth in given months?",
+    "line_plan_capacity": "S3 capacity reference: a line's average fixed (planned) volume in units when rated capacity is not entered.",
+    "network_dashboard": "Network view: WoC by segment and LC, red items per LC, factory lines with attainment.",
     "get_attainment": "S2: monthly and trailing-3-month factory attainment for a work centre, plus SKUs on the line.",
     "simulate_attainment": "S2: apply an attainment % to a work centre's production and recompute network WoC per SKU.",
     "capacity_gap": "S3: monthly demand in units vs effective capacity (rated x attainment) after growth %.",

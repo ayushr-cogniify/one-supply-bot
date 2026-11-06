@@ -88,7 +88,7 @@ def test_loose_wording_s1(chat):
 
 def test_percent_more(chat):
     chat.say("Customer wants 25% more 3283407 at Vegas week of 10/19")
-    assert tool_args(chat, "simulate_demand_change")[0].get("delta_pct") == 25.0
+    assert tool_args(chat, "assess_demand_change")[0].get("delta_pct") == 25.0
 
 
 def test_mixed_request(chat):
@@ -98,12 +98,12 @@ def test_mixed_request(chat):
 
 def test_week_number(chat):
     chat.say("+5,000 cases of 3283407 at Vegas in week 43")
-    assert tool_args(chat, "simulate_demand_change")[0]["week"] == 202643
+    assert tool_args(chat, "assess_demand_change")[0]["week"] == 202643
 
 
 def test_cut_demand_negative(chat):
     chat.say("Cut 2,000 cases of 3283407 demand at Vegas week of 10/19")
-    assert tool_args(chat, "simulate_demand_change")[0]["delta_cases"] == -2000
+    assert tool_args(chat, "assess_demand_change")[0]["delta_cases"] == -2000
 
 
 def test_st_peters_plant(chat):
@@ -152,3 +152,41 @@ def test_data_entry_capacity(chat):
 def test_pir(chat):
     chat.say("Show me the projected inventory for Lysol Sanitizers")
     assert chat.card()["scenario"] == "PIR"
+
+
+# ---- The Nov 6 review, in the planners' own words ----
+def test_meeting_attainment_plus_cases(chat):
+    chat.say("let's say my attainment is reduced to 75% and I need to serve 3000 more cases of 3283407 for week of 10/19")
+    c = chat.card()
+    assert c["scenario"] == "S2" and "PL11" in c["subtitle"]
+    assert any("3,000 cases of 3283407" in m["text"] for m in chat.last["messages"] if m["kind"] == "answer")
+
+
+def test_meeting_segment_growth_support(chat):
+    chat.say("my lysol 4x90 segment is expected to grow by 30% in november. does my current PIR, inventory and weeks of coverage support this increase?")
+    c = chat.card()
+    assert c["scenario"] == "S3" and "NO_DATA_CAPACITY" not in chat.templates()
+
+
+def test_meeting_eight_week_window(chat):
+    chat.say("I want to see weeks of coverage for 3283407 not by 6 weeks but 8 weeks, what will the network look like?")
+    args = [s["args"] for s in chat.last["trace"]["spans"] if s["step"] == "tool"][-1]
+    assert args.get("window_weeks") == 8
+
+
+def test_meeting_two_months_segment(chat):
+    chat.say("show me the weeks of coverage for the next 2 months for the LLS 90 oz segment")
+    assert chat.card()["scenario"] in ("PIR", "DASH")
+
+
+def test_meeting_doc_s1(chat):
+    chat.say("Can we take 5k more cases of Lysol 4x90 Odor in the week of 10/19?")
+    if "CLARIFY_ITEM" in chat.templates():
+        chat.pick("3283407", "material")
+    c = chat.card()
+    assert c["scenario"] == "S1" and "Options" in " ".join(b.get("title", "") for b in c["blocks"])
+
+
+def test_meeting_dashboard(chat):
+    chat.say("can I get one dashboard view of the whole network with segments and factories?")
+    assert chat.card()["scenario"] == "DASH"

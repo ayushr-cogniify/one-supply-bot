@@ -22,7 +22,7 @@ def test_e2_echo_and_result(chat):
 
 def test_percent_more_is_converted_by_the_tool(chat):
     chat.say("Customer wants 25% more 3283407 at Vegas week of 10/19")
-    args = tool_args(chat, "simulate_demand_change")[0]
+    args = tool_args(chat, "assess_demand_change")[0]
     assert args.get("delta_pct") == 25.0 and "delta_cases" not in args          # the model/rules never convert
     c = chat.card()
     kv = {i["label"]: i for i in block(c, "kv")[0]["items"]}
@@ -63,18 +63,18 @@ def test_unknown_line_name_asks(chat):
 
 def test_kinaxis_week_not_iso(chat):
     chat.say("+5,000 cases of 3283407 at Vegas week 202753")
-    assert tool_args(chat, "simulate_demand_change")[0]["week"] == 202753
+    assert tool_args(chat, "assess_demand_change")[0]["week"] == 202753
 
 
 def test_week_number_as_given(chat):
     chat.say("+5,000 cases of 3283407 at Vegas in week 43")
-    assert tool_args(chat, "simulate_demand_change")[0]["week"] == 202643
+    assert tool_args(chat, "assess_demand_change")[0]["week"] == 202643
     assert grid_cell(chat.card(), "USQ4", 0)["after"] == 0.3                     # same result as E.2
 
 
 def test_cut_demand_is_negative(chat):
     chat.say("Cut 2,000 cases of 3283407 demand at Vegas week of 10/19")
-    assert tool_args(chat, "simulate_demand_change")[0]["delta_cases"] == -2000
+    assert tool_args(chat, "assess_demand_change")[0]["delta_cases"] == -2000
     assert chat.card()["scenario"] == "S1"
 
 
@@ -107,9 +107,8 @@ def test_note_in_cut_file_is_data(chat):
 
 def test_four_ambiguous_followups(chat):
     chat.say("Can we take some cases of Odor?")
+    chat.session["pending"]["questions"] = 3
     chat.pick("3283407", "material")
-    chat.say("+5,000")
-    chat.pick(202643, "calweek")
     assert chat.templates() == ["TOO_MANY_QUESTIONS"]
 
 

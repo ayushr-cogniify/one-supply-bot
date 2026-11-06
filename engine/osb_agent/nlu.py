@@ -39,17 +39,18 @@ OOS = [
 ]
 
 SCENARIO_WORDS = {
+    "DASH": r"\bdashboard\b|\bnetwork\s+(?:view|overview|summary)\b|\boverview\s+of\s+the\s+network\b",
     "S4": r"\bcuts?\b(?!\s+[+-]?[\d,]+\s*k?\s*(?:cases?|cs)\b)|\bcutting\b|\breason\s+codes?\b|\bcode\s+the\b|\bpfr\b|\bfill\s+rate\b|\bservice\s+(?:miss|failure|fail)",
     "S2": r"\battainment\b|\badherence\b|\bfactory\b.*\b(?:at|drops?|running)\b|\b(?:pl|sl)\d{2}\b|\bba\d\b|\bwork\s*cent"
           r"|\b(?:st\.?\s*peters|saint\s+peters|belle\s*mead|plant|factory|line\s*\d+|stp)\b[^%]*\d+\s*%"
           r"|\d+\s*%[^.?!]*\b(?:plant|factory|line)\b",
-    "S3": r"\bgrowth\b|\bgrow\b|\bcapacity\b|\bsegment\b"
+    "S3": r"\bgrowth\b|\bgrows?\b|\bgrowing\b|\bcapacity\b|\bsegment\b"
           r"|\d+\s*%\s*more\b[^.?!]*\b\d+\s*(?:oz|fz)\b|\bmake\b[^.?!]*\d+\s*%\s*more\b",
     "S5": r"\bwhat\s+changed\b|\bchanged\b|\bsince\s+last\s+week\b|\breview\s+my\s+pir\b|\bmy\s+pir\s+items\b|\bweek\s+over\s+week\b|\bmoved\b",
     "PIR": r"\bpir\b|\bprojected\s+inventory\b|\binventory\s+report\b",
     "S1": r"\bcases?\b|\bcs\b|\bdemand\b|\bspike\b|\bextra\b|\bcan\s+we\s+(?:take|support|ship|cover)\b|\bcover\b|\bwoc\b|\bweeks?\s+of\s+cover\b|\d+\s*k\b|\bstock\b|\bon\s+hand\b|\d+\s*%\s*more\b|\bcustomer\s+wants\b",
 }
-PRIORITY = ["S4", "S5", "S2", "S3", "PIR", "S1"]
+PRIORITY = ["DASH", "S4", "S5", "S2", "S3", "PIR", "S1"]
 
 MONTHS = {m: i + 1 for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
 WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
@@ -119,6 +120,41 @@ def find_pct(t: str):
     return v
 
 
+def _num_word(x: str):
+    return int(x) if x.isdigit() else WORDNUM.get(x)
+
+
+def find_window(t: str):
+    """Weeks in the WoC denominator: 'average across 8 weeks', '8-week cover', 'not 6 weeks but 8 weeks'."""
+    w = r"(\d+|" + "|".join(WORDNUM) + r")"
+    for rx in [r"\bnot\s+(?:by\s+)?\d+\s+weeks?\s*,?\s*(?:but|use)\s+" + w + r"\s+weeks?",
+               r"\b(?:average|avg)\w*\s+(?:demand\s+)?(?:across|over|of|for|on)\s+(?:the\s+)?(?:next\s+)?" + w + r"\s+weeks?",
+               r"\b" + w + r"\s*-?\s*weeks?\s+(?:cover|window|average|denominator)\b",
+               r"\b(?:cover|woc)\s+(?:window|denominator)\s+(?:of\s+)?" + w + r"\s+weeks?"]:
+        m = re.search(rx, t)
+        if m:
+            return _num_word(m.group(1))
+    return None
+
+
+def find_horizon(t: str):
+    """How far ahead to show: 'next 2 months', 'next 10 weeks', 'for 12 weeks'."""
+    w = r"(\d+|" + "|".join(WORDNUM) + r")"
+    for m in re.finditer(r"\b(?:next|for\s+the\s+next|over\s+the\s+next|for)\s+" + w + r"\s+(weeks?|months?)\b", t):
+        if re.search(r"(?:averag\w*|avg)\s+(?:demand\s+)?(?:across|over|of|on)?\s*(?:the\s+)?$", t[:m.start()]):
+            continue                                   # that number is the averaging window, not the horizon
+        n = _num_word(m.group(1))
+        if n is not None:
+            return n * 4 if m.group(2).startswith("month") else n
+    return None
+
+
+def find_pct_reduction(t: str):
+    """'attainment reduced by 75%' is ambiguous (run at 75%, or 25%?): kept apart from a level."""
+    m = re.search(r"\b(?:reduc\w*|drop\w*|down|fall\w*|lower\w*|cut)\s+by\s+(\d+(?:\.\d+)?)\s*%", t)
+    return float(m.group(1)) if m else None
+
+
 def find_line_name(t: str):
     """A planner's name for a line ('Line 9') - mapped to a work centre only through the alias table."""
     m = re.search(r"\bline\s*(\d{1,2})\b", t)
@@ -127,6 +163,9 @@ def find_line_name(t: str):
 
 def find_size(t: str):
     m = re.search(r"\b(\d+(?:\.\d+)?)\s*-?\s*(?:oz|fz|fl\.?\s*oz|ounce)\b", t)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"\b\d+\s*(?:x|by|/)\s*(\d{2,3})\b(?=[^.?!]*\b(?:segment|grow|growth|portfolio|range)\b)", t)
     return float(m.group(1)) if m else None
 
 
@@ -171,6 +210,11 @@ def find_week(t: str):
     m = re.search(r"\b(?:week|wk)\s*#?\s*(\d{1,2})\b(?!\s*/)", t)
     if m and 1 <= int(m.group(1)) <= 53:
         return {"week_number": int(m.group(1))}
+    m = re.search(r"\b(?:week|wk)\s+(?:of\s+)?(\d{1,2}/\d{1,2}(?:/\d{2,4})?)", t)
+    if m:
+        d = find_date(m.group(1))
+        if d:
+            return {"date": d}
     m = re.search(r"\bweek\s+of\s+(.+?)(?=$|[?.,!]|\s+at\b|\s+in\b)", t)
     if m:
         d = find_date(m.group(1))
@@ -205,7 +249,7 @@ def find_item_text(t: str):
         m = re.search(rx, t)
         if m:
             s = re.sub(r"^(?:the|our|my|some)\s+", "", m.group(1).strip())
-            if s and not re.fullmatch(r"[\d,.\s%+-]*|week.*|lcs?|network|cases?", s):
+            if s and len(s) > 2 and s not in {"lysol", "the", "our", "my", "us"} and not re.fullmatch(r"[\d,.\s%+-]*|week.*|lcs?|network|cases?|the|next", s):
                 return s
     return None
 
@@ -234,10 +278,17 @@ def parse(text: str) -> Parse:
         label = "S2"
     if label is None:
         return Parse("OUT_OF_SCOPE", 0.4, "no scenario keyword")
+    # Cover for a whole segment (no growth asked) is a projected-inventory view, not S3
+    if label == "S3" and re.search(r"\bcover\b|\bwoc\b", t) and not re.search(r"\bgrow|growth|capacity|\d+\s*%", t):
+        label = "PIR"
     slots = {
         "item_text": find_item_text(t),
         "delta_cases": find_delta(t),
-        "pct": find_pct(t),
+        "pct": None if find_pct_reduction(t) is not None and re.search(r"attain|line|plant|factory|running", t)
+               else find_pct(t),
+        "pct_reduction": find_pct_reduction(t) if re.search(r"attain|line|plant|factory|running", t) else None,
+        "window_weeks": find_window(t),
+        "horizon_weeks": find_horizon(t),
         "pct_range": find_pct_range(t),
         "line_name": find_line_name(t),
         "out_of_scope_action": oos_action,

@@ -28,33 +28,32 @@ test("boots the engine and shows the load state", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("S1: Odor at Vegas asks the item and week, then shows the card", async ({ page }) => {
+test("S1: +5k Odor at Vegas follows the workflow: verdict, why, options", async ({ page }) => {
   await ready(page);
-  await page.getByRole("button", { name: /\+5,000 cases of Odor at Vegas/ }).click();
-  await expect(lastBot(page)).toContainText("more than one match");
-  await lastBot(page).getByRole("button", { name: /^3283407/ }).click();
-  await expect(lastBot(page)).toContainText("Which week");
-  await lastBot(page).getByRole("button", { name: "Week of 10/19" }).click();
+  await page.getByRole("button", { name: /\+5k cases of 4x90 Odor at Vegas/ }).click();
   const card = page.locator('[data-card="S1"]');
+  await expect(card).toContainText("Why USQ4 cover drops");
+  await expect(card).toContainText("Options to cover it");
   await expect(card).toContainText("Do not support without a replan");
   await expect(card.locator("tr", { hasText: "USQ4" }).first()).toContainText("0.3");
   await expect(page.locator(".msg.answer").last()).toContainText("Every number checked");
   await card.getByRole("button", { name: "Open trace" }).click();
-  await expect(page.getByRole("dialog")).toContainText("simulate_demand_change");
+  await expect(page.getByRole("dialog")).toContainText("assess_demand_change");
   await expect(page.getByRole("dialog")).toContainText("Numeric validator");
 });
 
-test("S3: capacity gap waits for planner input, then computes", async ({ page }) => {
+test("S3: answers from inventory and plan, then uses entered capacity", async ({ page }) => {
   await ready(page);
-  await page.getByRole("button", { name: /35% growth in 90 oz laundry/ }).click();
+  await page.getByRole("button", { name: /4x90 segment grows 30% in November/ }).click();
   const card = page.locator('[data-card="S3"]');
-  await expect(card).toContainText("rated line capacity is missing");
-  await expect(card).toContainText("2,144,804");
-  await expect(page.locator('[data-form="rated_capacity"]')).toBeVisible();
+  await expect(card).toContainText("Current inventory does not support it");
+  await expect(card).toContainText("line's fixed plan");
+  await lastBot(page).getByRole("button", { name: /Enter rated capacity for PL11/ }).click();
   await page.getByLabel("Rated capacity, units per month").fill("2000000");
   await page.getByRole("button", { name: "Save and continue" }).click();
-  await expect(card).toContainText("690,804");
-  await expect(card).toContainText("planner-entered");
+  await page.getByLabel("Message").fill("Can we make 35% more 90 oz laundry sanitizer from November, six months out?");
+  await page.getByLabel("Message").press("Enter");
+  await expect(page.locator('[data-card="S3"]').first()).toContainText("690,804");
 });
 
 test("S4: decision tree asks pacing, proposes C0 and records the approval", async ({ page }) => {
@@ -74,7 +73,8 @@ test("S4: decision tree asks pacing, proposes C0 and records the approval", asyn
 
 test("Out of scope is refused with no card", async ({ page }) => {
   await ready(page);
-  await page.getByRole("button", { name: /Upload a forecast to Kinaxis/ }).click();
+  await page.getByLabel("Message").fill("Upload a forecast to Kinaxis.");
+  await page.getByLabel("Message").press("Enter");
   await expect(lastBot(page)).toContainText("I can only help with the five One Supply Bot scenarios");
   await expect(page.locator(".card")).toHaveCount(0);
 });
@@ -115,4 +115,12 @@ test("S5: ranked Kinaxis digest", async ({ page }) => {
   const card = page.locator('[data-card="S5"]');
   await expect(card).toContainText("Weekly digest, ranked by risk");
   await expect(card).toContainText("Main driver");
+});
+
+test("Network dashboard from the header", async ({ page }) => {
+  await ready(page);
+  await page.getByRole("button", { name: "Network dashboard" }).first().click();
+  const card = page.locator('[data-card="DASH"]');
+  await expect(card).toContainText("Weeks of cover by segment and LC");
+  await expect(card).toContainText("PL11");
 });

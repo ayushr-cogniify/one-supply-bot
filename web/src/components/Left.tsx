@@ -2,12 +2,12 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import type { Action, Message } from "../types";
 
 export const STARTERS = [
-  { k: "S1", label: "+5,000 cases of Odor at Vegas", ask: "Can we take +5,000 cases of Odor at Vegas?" },
-  { k: "S2", label: "St. Peters at 80% attainment", ask: "What happens if St. Peters runs at 80% attainment?" },
-  { k: "S3", label: "35% growth in 90 oz laundry", ask: "Can we make 35% more 90 oz laundry sanitizer from November, six months out?" },
+  { k: "S1", label: "+5k cases of 4x90 Odor at Vegas, week of 10/19", ask: "Can we take +5k cases of Lysol 4x90 Odor at Vegas in week 10/19?" },
+  { k: "S2", label: "PL11 at 75% and +3,000 cases of 4x90 Odor", ask: "PL11 attainment drops to 75% and I need to serve 3,000 more cases of 3283407 in week of 10/19. Can we?" },
+  { k: "S3", label: "4x90 segment grows 30% in November", ask: "The Lysol 4x90 segment is expected to grow 30% in November. Does current inventory and weeks of cover support it?" },
   { k: "S4", label: "Code the 10/15 Vegas cut", ask: "Code the 10/15 cut of Crisp Linen 6x21 at Vegas." },
-  { k: "S5", label: "Review my PIR items", ask: "Review my PIR items" },
-  { k: "Off-topic", label: "Upload a forecast to Kinaxis", ask: "Upload a forecast to Kinaxis." },
+  { k: "S5", label: "What changed this week?", ask: "What changed since last week?" },
+  { k: "NET", label: "Network dashboard", ask: "Give me the network dashboard" },
 ];
 
 const SCENARIOS = [

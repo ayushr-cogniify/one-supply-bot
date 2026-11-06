@@ -11,6 +11,7 @@ S3_segment_growth     a segment or size growing, and whether line capacity is en
 S4_pfr_reason_coding  fill rate, service cuts, why service failed, reason codes, coding a cut
 S5_what_changed       what moved or changed since last week or a previous snapshot; reviewing PIR items
 PIR_report            a projected inventory report (PIR) for an item, a group or the planner's items
+NETWORK_DASHBOARD     an overview of the whole network: segments, LCs, factories, lines
 FOLLOW_UP             continues the active scenario given in SESSION CONTEXT, changing only some details (for example "and at Atlanta?"). If the active scenario is "none", never use this label; classify the message on its own.
 DATA_ENTRY            the planner is supplying a value (for example a line capacity), an answer or a file
 OUT_OF_SCOPE          see below
@@ -38,6 +39,11 @@ Examples:
 "Why was laundry sanitizer fill rate so low in September?" -> S4_pfr_reason_coding
 "What moved since last Monday?" -> S5_what_changed
 "Show me the PIR for disinfecting spray" -> PIR_report
+"Lysol 4x90 segment will grow 30% in November, does current inventory and cover support it?" -> S3_segment_growth (size_oz 90)
+"Attainment drops to 75% and I need to serve 3,000 more cases of Odor week of 10/19" -> S2_attainment_drop (attainment_pct 75, quantity 3000 cases, item "Odor")
+"Show weeks of cover for 4x90 Odor using an 8-week average, next 2 months" -> S1_demand_spike (window_weeks 8, horizon_weeks 8, intent cover)
+"Give me the network dashboard" -> NETWORK_DASHBOARD
+"Weeks of cover for the next 2 months for the LLS 90 oz segment" -> PIR_report (size_oz 90, brand Lysol Sanitizers, horizon_weeks 8)
 "Draft the constraint call for that" -> FOLLOW_UP
 "Capacity on PL11 is 2M bottles a month" -> DATA_ENTRY
 "Can we take +5k of 3283407 at Vegas, and email the plant if not?" -> S1_demand_spike, has_out_of_scope_part true
@@ -75,7 +81,12 @@ Other slots:
 - reason: under 10 words.
 - cut_date: a specific cut date (yyyy-mm-dd), resolved from Today when the year is missing.
 - month: a month the planner names for PFR or cuts (yyyy-mm).
-- horizon_months: a horizon such as "six months out" -> 6.
+- horizon_months: a capacity or growth horizon such as "six months out" -> 6.
+- window_weeks: the weeks of forward demand in the cover formula when the planner changes it ("average over 8 weeks", "8-week cover", "not 6 but 8 weeks") -> 8. Otherwise null (code uses 6).
+- horizon_weeks: how many weeks to show ("next 2 months" -> 8, "next 10 weeks" -> 10). Otherwise null.
+- attainment_pct: an attainment level for a line or plant ("running at 80%", "attainment drops to 75%") -> 80 / 75. Put any case quantity in quantity, not here.
+- attainment_reduction_pct: "attainment reduced by 25%" (a change, not a level) -> 25. Code asks the planner which level they mean.
+- For a segment question, a pack written like "4x90" means the 90 oz size: size_oz 90.
 - intent: "cover" when the planner asks for the weeks of cover or stock of an item without a quantity change; "code_cut" when asking to code or explain one specific cut; "pareto" when asking about top cuts or PFR for a period; "pir_items" when asking about their own PIR item list; "simulate" for a quantity or percentage change; otherwise null.`;
 
 // At most 16 union-typed fields are allowed: strings use "" and enums use "none" for "not given";
@@ -92,7 +103,7 @@ export const SCHEMA = {
     label: {
       type: "string",
       enum: ["S1_demand_spike", "S2_attainment_drop", "S3_segment_growth", "S4_pfr_reason_coding", "S5_what_changed",
-        "PIR_report", "FOLLOW_UP", "DATA_ENTRY", "OUT_OF_SCOPE"],
+        "PIR_report", "NETWORK_DASHBOARD", "FOLLOW_UP", "DATA_ENTRY", "OUT_OF_SCOPE"],
     },
     confidence: { type: "number" },
     has_out_of_scope_part: { type: "boolean" },
@@ -102,7 +113,8 @@ export const SCHEMA = {
       type: "object",
       additionalProperties: false,
       required: ["item_text", "quantity", "week", "lc_codes", "network", "factory_code", "work_center", "line_name",
-        "size_oz", "brand", "cut_date", "month", "horizon_months", "intent", "ambiguity"],
+        "size_oz", "window_weeks", "horizon_weeks", "attainment_pct", "attainment_reduction_pct", "brand", "cut_date",
+        "month", "horizon_months", "intent", "ambiguity"],
       properties: {
         item_text: str,
         quantity: {
@@ -123,6 +135,10 @@ export const SCHEMA = {
         work_center: str,
         line_name: str,
         size_oz: num,
+        window_weeks: num,
+        horizon_weeks: num,
+        attainment_pct: num,
+        attainment_reduction_pct: num,
         brand: choice(["Lysol LDS", "Lysol Sanitizers"]),
         cut_date: str,
         month: str,

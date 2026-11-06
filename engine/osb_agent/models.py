@@ -36,7 +36,8 @@ def table() -> list:
 
 LABELS = {"S1_demand_spike": "S1", "S2_attainment_drop": "S2", "S3_segment_growth": "S3",
           "S4_pfr_reason_coding": "S4", "S5_what_changed": "S5", "PIR_report": "PIR",
-          "OUT_OF_SCOPE": "OUT_OF_SCOPE", "FOLLOW_UP": "FOLLOW_UP", "DATA_ENTRY": "DATA_ENTRY"}
+          "OUT_OF_SCOPE": "OUT_OF_SCOPE", "FOLLOW_UP": "FOLLOW_UP", "DATA_ENTRY": "DATA_ENTRY",
+          "NETWORK_DASHBOARD": "DASH"}
 MIN_CONFIDENCE = 0.70
 
 
@@ -84,7 +85,7 @@ def from_claude(c: dict) -> dict:
         out["work_center"] = sl["work_center"].strip().upper()
     if sl.get("line_name"):
         out["line_name"] = sl["line_name"].strip()
-    if sl.get("size_oz") is not None and label == "S3":
+    if sl.get("size_oz") is not None and (label in ("S3", "DASH", "PIR") or not sl.get("item_text")):
         out["size_oz"] = float(sl["size_oz"])
     if sl.get("brand") not in (None, "", "none"):
         out["brand"] = sl["brand"]
@@ -95,6 +96,15 @@ def from_claude(c: dict) -> dict:
         out["month"] = (int(y), int(m))
     if sl.get("horizon_months") is not None:
         out["months"] = int(sl["horizon_months"])
+    if sl.get("window_weeks") is not None:
+        out["window_weeks"] = int(sl["window_weeks"])
+    if sl.get("horizon_weeks") is not None:
+        out["horizon_weeks"] = int(sl["horizon_weeks"])
+    if sl.get("attainment_pct") is not None:                   # S2 level alongside a case quantity
+        out["pct"] = float(sl["attainment_pct"])
+    if sl.get("attainment_reduction_pct") is not None and label == "S2":
+        out["pct_reduction"] = float(sl["attainment_reduction_pct"])
+        out.pop("pct", None)
     intent = sl.get("intent")
     if intent == "cover" and "delta_cases" not in out and "pct" not in out:
         out["cover_query"] = True

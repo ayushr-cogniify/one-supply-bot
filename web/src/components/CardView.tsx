@@ -108,7 +108,7 @@ function WocGrid({ b }: { b: Extract<Block, { type: "wocgrid" }> }) {
           <thead>
             <tr>
               <th>{b.row_label ?? "LC"}</th>
-              {b.weeks.map((w) => <th key={w.calweek} className="r">{w.calweek}<div className="muted" style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>{w.label.replace("week of ", "")}</div></th>)}
+              {b.weeks.map((w) => <th key={w.calweek} className="r">{b.labels_only ? w.label : <>{w.calweek}<div className="muted" style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>{w.label.replace("week of ", "")}</div></>}</th>)}
             </tr>
           </thead>
           <tbody>

@@ -108,7 +108,7 @@ def simulate_attainment(work_center: str, attainment_pct: float, horizon_weeks: 
                     values={"work_center": work_center, "factory_site": site, "attainment_pct": attainment_pct,
                             "baseline_trailing_pct": base["values"]["trailing_avg_pct"], "basis": basis,
                             "skus_below_floor": below, "production_shortfall_cases": shortfall,
-                            "skus_on_multiple_lines": multi},
+                            "skus_on_multiple_lines": multi, "extra_demand": extra_demand},
                     table=table(df),
                     warnings=["Network level only: LC split of the shortfall and transfer lead times not modelled yet",
                               f"Basis '{basis}': confirm with Rushi whether attainment applies to planned only "

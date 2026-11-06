@@ -7,7 +7,7 @@ from .woc import add_woc, apply_demand_change, calendar, series
 
 
 def generate_pir(materials=None, bsg_group=None, locations=None, start_week=None,
-                 horizon_weeks=12, demand_changes=None, plan=None) -> pd.DataFrame:
+                 horizon_weeks=12, demand_changes=None, plan=None, window_weeks=config.WOC_WINDOW_WEEKS) -> pd.DataFrame:
     """Long table: level, group, material, location, calweek, week_start,
     total_demand, available_supply, balance, avg_fwd_demand, woc, colour.
 
@@ -41,7 +41,7 @@ def generate_pir(materials=None, bsg_group=None, locations=None, start_week=None
         net = (pd.concat(lc_frames).groupby("CALWEEK", as_index=False)
                [["STOCK_PLANNED", "TOTAL_DEMAND", "TOTAL_SUPPLY"]].sum().assign(location="NETWORK"))
         for f, level in [(x, "LC") for x in lc_frames] + [(net, "NETWORK")]:
-            frames.append(add_woc(f).assign(level=level, material=m, group=groups.get(m)))
+            frames.append(add_woc(f, window_weeks).assign(level=level, material=m, group=groups.get(m)))
 
     if not frames:
         return pd.DataFrame()
@@ -50,7 +50,7 @@ def generate_pir(materials=None, bsg_group=None, locations=None, start_week=None
     # Group roll-up (PIR 'Segment' sheet): sum cases across items, WoC recomputed on the sums
     grp = (out[out.level == "NETWORK"].groupby(["group", "CALWEEK"], as_index=False)
            [["STOCK_PLANNED", "TOTAL_DEMAND", "TOTAL_SUPPLY"]].sum())
-    grp_frames = [add_woc(g.sort_values("CALWEEK").reset_index(drop=True)).assign(level="GROUP", material="ALL", location="NETWORK")
+    grp_frames = [add_woc(g.sort_values("CALWEEK").reset_index(drop=True), window_weeks).assign(level="GROUP", material="ALL", location="NETWORK")
                   for _, g in grp.groupby("group")]
     out = pd.concat([out] + grp_frames, ignore_index=True)
 
