@@ -28,6 +28,48 @@ def inventory_diff(date_a, date_b, materials=None, inv=None) -> pd.DataFrame:
     return df, da, db
 
 
+def _drivers(plan_a, plan_b, m, loc, w, ra, rb, window=config.WOC_WINDOW_WEEKS):
+    """Split a WoC move (workflow doc S5 step 3) into forecast change, dependent / inter-site demand,
+    other demand (orders), supply slipped or added through the week, and earlier stock. Each part is
+    turned into weeks of cover and the largest names the driver."""
+    locs = config.LCS if loc == "NETWORK" else [loc]
+
+    def part(plan, col, weeks):
+        if col not in plan.columns:
+            return 0.0
+        x = plan[(plan.MATERIAL == m) & plan.LOCATION.isin(locs) & plan.CALWEEK.isin(weeks)]
+        return float(x[col].sum())
+
+    wb = sorted(c for c in plan_b.CALWEEK.unique() if c != config.OPENING_BUCKET)
+    fwd = [c for c in wb if c > w][:window]
+    to_w = [c for c in wb if c <= w]
+    avg_a = ra.avg_fwd_demand
+    dF = (part(plan_b, "FORECAST", fwd) - part(plan_a, "FORECAST", fwd)) / window
+    dD = (part(plan_b, "DEP_DEM", fwd) - part(plan_a, "DEP_DEM", fwd)) / window
+    dT = rb.avg_fwd_demand - ra.avg_fwd_demand
+    dO = dT - dF - dD
+    dS = part(plan_b, "TOTAL_SUPPLY", to_w) - part(plan_a, "TOTAL_SUPPLY", to_w)
+    dStock = rb.STOCK_PLANNED - ra.STOCK_PLANNED
+    stock_b = rb.STOCK_PLANNED
+
+    def dem(x):
+        return stock_b / (avg_a + x) - stock_b / avg_a if avg_a + x > 0 else 0.0
+    effects = {
+        "forecast": (dem(dF), f"forecast {dF:+,.0f} cases/week"),
+        "dependent / inter-site demand": (dem(dD), f"dependent demand {dD:+,.0f} cases/week"),
+        "other demand (orders)": (dem(dO), f"other demand {dO:+,.0f} cases/week"),
+        "supply": (dS / avg_a, f"supply through week {w} {dS:+,.0f} cases"),
+        "earlier stock and demand": ((dStock - dS) / avg_a, f"opening stock and demand to date {dStock - dS:+,.0f} cases"),
+    }
+    name, (eff, detail) = max(effects.items(), key=lambda kv: abs(kv[1][0]))
+    word = {"forecast": "forecast up" if dF > 0 else "forecast down",
+            "dependent / inter-site demand": "dependent / inter-site demand up" if dD > 0 else "dependent / inter-site demand down",
+            "other demand (orders)": "orders up" if dO > 0 else "orders down",
+            "supply": "supply slipped" if dS < 0 else "supply added",
+            "earlier stock and demand": "lower opening stock" if dStock - dS < 0 else "higher opening stock"}[name]
+    return word, detail
+
+
 def kinaxis_diff(plan_a, plan_b, materials=None, min_move_weeks=1.0, calweek=None) -> pd.DataFrame:
     """WoC for the same plan week in two snapshots. calweek defaults to the first planning week of
     the newer snapshot. Each move gets its driver: the larger of the stock effect (projected stock
@@ -52,17 +94,13 @@ def kinaxis_diff(plan_a, plan_b, materials=None, min_move_weeks=1.0, calweek=Non
                 continue
             delta = rb.woc - ra.woc
             if colour(ra.woc) != colour(rb.woc) or abs(delta) >= min_move_weeks:
-                stock_effect = (rb.STOCK_PLANNED - ra.STOCK_PLANNED) / ra.avg_fwd_demand
-                demand_effect = delta - stock_effect
-                driver = (("projected stock up" if stock_effect > 0 else "projected stock down")
-                          if abs(stock_effect) >= abs(demand_effect) else
-                          ("forward demand down" if demand_effect > 0 else "forward demand up"))
+                driver, detail = _drivers(plan_a, plan_b, m, loc, calweek, ra, rb)
                 rows.append({"material": m, "location": loc, "calweek": calweek,
                              "woc_a": round(ra.woc, 1), "woc_b": round(rb.woc, 1), "delta_weeks": round(delta, 1),
                              "colour_a": colour(ra.woc), "colour_b": colour(rb.woc),
                              "stock_a": int(ra.STOCK_PLANNED), "stock_b": int(rb.STOCK_PLANNED),
                              "demand_a": round(ra.avg_fwd_demand), "demand_b": round(rb.avg_fwd_demand),
-                             "driver": driver})
+                             "driver": driver, "driver_detail": detail})
     df = pd.DataFrame(rows)
     if df.empty:
         return df

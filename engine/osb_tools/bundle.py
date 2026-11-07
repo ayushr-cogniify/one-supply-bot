@@ -36,6 +36,7 @@ KEEP = {
     "storyline": None,
     "pfr_lines": None,
     "kinaxis_snapshots": None,
+    "lag_forecast": None,
 }
 
 _FRAMES: dict = {}
@@ -71,13 +72,14 @@ def _sources():
         "storyline": lambda: adapter.storyline("Hygiene Storyline"),
         "pfr_lines": lambda: cuts.pfr_lines()[lambda d: d["BSG Group"].isin(["Lysol LDS", "Lysol Sanitizers"])],
         "kinaxis_snapshots": _recent_snapshots,
+        "lag_forecast": adapter.lag_forecast,
     }
 
 
 def _recent_snapshots(n=5):
     df = adapter.kinaxis_snapshots()
     keep = sorted(df.snapshot_date.unique())[-n:]
-    cols = ["MATERIAL", "LOCATION", "CALWEEK", "STOCK_PLANNED", "TOTAL_DEMAND", "TOTAL_SUPPLY", "FORECAST",
+    cols = ["MATERIAL", "LOCATION", "CALWEEK", "STOCK_PLANNED", "TOTAL_DEMAND", "TOTAL_SUPPLY", "FORECAST", "DEP_DEM",
             "snapshot_date", "_file", "_sheet", "_row"]
     return df[df.snapshot_date.isin(keep)][cols]
 
@@ -154,6 +156,8 @@ def _install():
     adapter.transport = lambda: _FRAMES["transport"]
     adapter.reason_codes = lambda: _FRAMES["reason_codes"]
     adapter.storyline = lambda sheet="Hygiene Storyline": _FRAMES["storyline"]
+    if "lag_forecast" in _FRAMES:
+        adapter.lag_forecast = lambda: _FRAMES["lag_forecast"]
     if "kinaxis_snapshots" in _FRAMES:
         _FRAMES["kinaxis_snapshots"]["CALWEEK"] = _FRAMES["kinaxis_snapshots"]["CALWEEK"].astype("int64")
         adapter.kinaxis_snapshots = lambda: _FRAMES["kinaxis_snapshots"]

@@ -3,7 +3,7 @@ these. Schemas follow Engineering appendix B.2 (trimmed to what is implemented).
 from .attainment import get_attainment, simulate_attainment
 from .assess import assess_demand_change, line_plan_capacity, network_dashboard, segment_growth_cover
 from .capacity import capacity_gap, segment_demand
-from .cuts import cuts_pareto, get_cut_line, list_cut_lines
+from .cuts import cuts_pareto, get_cut_line, list_cut_lines, pfr_drilldown
 from .decision_tree import walk_decision_tree
 from .diff import diff_snapshots
 from .items import resolve_item
@@ -84,6 +84,9 @@ TOOLS = {
     "cuts_pareto": (cuts_pareto, {"type": "object", "required": ["period_from", "period_to"], "properties": {
         "period_from": {"type": "string", "format": "date"}, "period_to": {"type": "string", "format": "date"},
         "scope": {"type": "string", "enum": ["Lysol LDS", "Lysol Sanitizers", "both"]}, "top_n": {"type": "integer"}}}),
+    "pfr_drilldown": (pfr_drilldown, {"type": "object", "required": ["period_from", "period_to"], "properties": {
+        "period_from": {"type": "string", "format": "date"}, "period_to": {"type": "string", "format": "date"},
+        "scope": {"type": "string", "enum": ["Lysol LDS", "Lysol Sanitizers", "both"]}, "top_n": {"type": "integer"}}}),
     "list_cut_lines": (list_cut_lines, {"type": "object", "required": ["lc", "cut_date"], "properties": {
         "lc": {"type": "string", "enum": LC_ENUM}, "cut_date": {"type": "string", "format": "date"},
         "top_n": {"type": "integer"}}}),
@@ -116,6 +119,7 @@ DESCRIPTIONS = {
     "capacity_gap": "S3: monthly demand in units vs effective capacity (rated x attainment) after growth %.",
     "segment_demand": "S3: monthly demand in cases and units for a segment, before and after growth %.",
     "cuts_pareto": "S4: top cutting items, cases cut/ordered and PFR % for a date range from the PFR extract.",
+    "pfr_drilldown": "S4 workflow: Pareto plus, per top item, cover now, orders vs lag-1 forecast, top customer, recovery week, largest cut and rule-based code.",
     "list_cut_lines": "S4: cut lines at one LC on one day from the PFR extract, largest first.",
     "get_cut_line": "S4: one item's cut at one LC on one day from the PFR extract (cases cut, ordered, recorded RC).",
     "walk_decision_tree": "S4: walk the reason-code decision tree for one cut line and propose a SAP reason code.",

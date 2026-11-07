@@ -189,6 +189,10 @@ function Planner({ auth }: { auth: AuthSession }) {
   const onAction = (a: Action, label: string, index: number) => {
     if (a.type === "open_gap") return setOpenGap(a.gap ?? null);
     if (a.type === "focus") return inputRef.current?.focus();
+    if (a.type === "ask" && a.text) {
+      if (index >= 0) setMessages((m) => m.map((x, i) => (i === index ? { ...x, used: true } : x)));
+      return send(a.text);
+    }
     if (index >= 0) setMessages((m) => m.map((x, i) => (i === index ? { ...x, used: true } : x)));
     setMessages((m) => [...m, { kind: "user", text: label, options: [] }]);
     run(a as unknown as Record<string, unknown>, label);

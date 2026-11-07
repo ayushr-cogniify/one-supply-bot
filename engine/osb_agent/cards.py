@@ -233,13 +233,50 @@ def s2(card_id, wc, pct, att_res, sim) -> dict:
          "weeks": [{"calweek": w, "label": cx.week_label(w)} for w in weeks], "rows": heat,
          "note": "Shortfall = production in the week × (1 − attainment), taken off network stock from that week on."},
     ]
+    ex = sv.get("extra_demand") or {}
+    if ex.get("split") and not ex.get("material"):
+        blocks.append({"type": "table", "title": f"Extra {fmt_int(ex['delta_cases'])} cases, spread across the line by demand",
+                       "columns": [{"key": "material", "label": "SKU"}, {"key": "description", "label": "Description"},
+                                   {"key": "cases", "label": "Extra cases", "format": "int"}],
+                       "rows": [{"material": m, "description": cx.item_desc(m) or "", "cases": c} for m, c in ex["split"].items()],
+                       "note": f"Added in week {ex['week']}, split in proportion to each SKU's total demand in the horizon."})
+    blocks.append({"type": "kv", "items": [
+        {"label": "Unserved cases, before", "value": fmt_int(sv["unserved_cases_before"]), "sub": "plan as is, horizon shown"},
+        {"label": "Unserved cases, after", "value": fmt_int(sv["unserved_cases_after"]), "sub": "with the change"},
+        {"label": "Fill rate, before → after", "value": f"{sv['fill_rate_before_pct']}% → {sv['fill_rate_after_pct']}%",
+         "sub": "1 − unserved / demand, network"},
+        {"label": "Constraint call", "value": "Recommended" if sv["constraint_call"] else "Not needed",
+         "sub": f"{len(sv['leveling']['remaining_below_floor'])} SKUs still below 2 weeks after leveling"}]})
+    lv = sv["leveling"]
+    if lv["moves"]:
+        blocks.append({"type": "table", "title": "Leveling proposal on the line (blue SKUs give to red ones)",
+                       "columns": [{"key": "calweek", "label": "Week"}, {"key": "from_sku", "label": "From SKU"},
+                                   {"key": "to_sku", "label": "To SKU"}, {"key": "cases_from", "label": "Cases given", "format": "int"},
+                                   {"key": "cases_to", "label": "Cases made", "format": "int"}, {"key": "units", "label": "Units", "format": "int"}],
+                       "rows": lv["moves"],
+                       "note": "Production moves stay on this line, in units (cases × case-to-each); donors stay at 4 weeks of cover or more. "
+                               + (f"Fixed by leveling: {', '.join(lv['skus_fixed'])}. " if lv["skus_fixed"] else "")
+                               + (f"Still below 2 weeks: {', '.join(lv['remaining_below_floor'])}." if lv["remaining_below_floor"] else "")})
+    else:
+        blocks.append({"type": "note", "tone": "info", "title": "Leveling",
+                       "text": "No SKU on the line has cover above 5 weeks to give in the weeks it is needed, so leveling cannot close the gap."})
     for w in sim.get("warnings", []):
         blocks.append({"type": "note", "tone": "muted", "text": w})
     narrative = (f"At {pct:g}% attainment {wc} loses {fmt_int(sv['production_shortfall_cases'])} cases of production "
                  f"over the weeks shown. Trailing 3-month attainment is {av['trailing_avg_pct']}%. ")
     narrative += (f"SKUs that turn red: {', '.join(below)}." if below else "No SKU turns red at network level.")
+    narrative += (f" Projected unserved cases go from {fmt_int(sv['unserved_cases_before'])} to {fmt_int(sv['unserved_cases_after'])} "
+                  f"(fill rate {sv['fill_rate_before_pct']}% to {sv['fill_rate_after_pct']}%).")
+    lvv = sv["leveling"]
+    if lvv["moves"]:
+        narrative += f" Leveling moves production in {len(lvv['moves'])} steps" + (f" and fixes {', '.join(lvv['skus_fixed'])}." if lvv["skus_fixed"] else ".")
+    narrative += (" A constraint call is recommended: SKUs stay below 2 weeks after leveling." if sv["constraint_call"]
+                  else " No constraint call is needed.")
     ex = sv.get("extra_demand")
-    if ex:
+    if ex and not ex.get("material") and ex.get("split"):
+        narrative += (f" The extra {fmt_int(ex['delta_cases'])} cases are spread across {len(ex['split'])} SKUs on the line "
+                      f"in week {ex['week']}.")
+    if ex and ex.get("material"):
         m, wk = str(ex["material"]), int(ex["week"])
         r0 = by.get(m, {}).get(wk)
         if r0:
@@ -248,8 +285,8 @@ def s2(card_id, wc, pct, att_res, sim) -> dict:
                           f"({COLOUR_WORD.get(r0['colour_after'], '')}).")
     card = {"id": card_id, "scenario": "S2", "status": "ok",
             "subtitle": f"{cx.wc_label(wc)} \u00b7 {pct:g}% attainment \u00b7 network level", "blocks": blocks}
-    if below:
-        card["replan"] = {"scenario": "S2", "text": (
+    if below or sv["constraint_call"]:
+        card["replan"] = {"scenario": "S2", "kind": "constraint call", "text": (
             f"Constraint call / replan request for {wc}: at {pct:g}% attainment the line loses "
             f"{fmt_int(sv['production_shortfall_cases'])} cases of production over the next {len(weeks)} weeks and "
             f"{', '.join(below)} fall below 2 weeks of network cover. Please confirm the replan for these SKUs.")}
@@ -460,31 +497,69 @@ def s4_tree(card_id, cut: dict, tree: dict, extra=()) -> dict:
 
 # ---------- S4 pareto ----------
 def s4_pareto(card_id, label, res) -> dict:
+    """S4 (workflow doc): PFR and Pareto, then per top item the diagnosis chain."""
     v = res["values"]
     rows = rows_of(res)
-    top = rows[0] if rows else None
+    items = v.get("items", [])
+    diag = []
+    for i in items:
+        c = i.get("top_customer") or {}
+        diag.append({"material": i["material"], "description": i["description"], "cases_cut": i["cases_cut"], "share": i["share"],
+                     "woc_start": i.get("woc_start"), "colour": colour_of(i.get("woc_start")),
+                     "ordered_cases": i["ordered_cases"], "lag1_forecast_cases": i["lag1_forecast_cases"],
+                     "pace": i["orders_pct_of_forecast"], "branch": i["branch"],
+                     "customer": f"{c.get('customer', '').replace('L2 - ', '')} {c.get('share_pct')}%" if c else "",
+                     "recovery_week": i["recovery_week"], "code": f"{i['suggested_code']} ({i['rule']})" if i["suggested_code"] else i["rule"]})
     blocks = [
         {"type": "kv", "items": [
             {"label": "PFR", "value": f"{v['pfr_pct']}%", "sub": v["pfr_basis"]},
             {"label": "Cases cut", "value": fmt_int(v["total_cut"]), "sub": "PFR cuts"},
             {"label": "Cases ordered", "value": fmt_int(v["total_ordered"]), "sub": f"{v['period_from']} to {v['period_to']}"},
-            {"label": "Scope", "value": v["scope"] if v["scope"] != "both" else "LDS and Sanitizers", "sub": "Summary ZSD Ship"}]},
+            {"label": f"Top {v.get('top_n', len(rows))} items", "value": f"{v.get('top_share_pct', '')}%", "sub": "share of cut cases"}]},
         {"type": "table", "title": "Top cutting items",
          "columns": [{"key": "material", "label": "Item"}, {"key": "description", "label": "Description"},
                      {"key": "cases_cut", "label": "Cases cut", "format": "int"},
                      {"key": "cases_ordered", "label": "Ordered", "format": "int"},
                      {"key": "share", "label": "Share of cuts", "format": "share"},
                      {"key": "cumulative_share", "label": "Cumulative", "format": "pct1"},
-                     {"key": "top_reason_code", "label": "Top RC", "format": "code"}],
+                     {"key": "top_reason_code", "label": "Recorded RC", "format": "code"}],
          "rows": rows,
          "note": "PFR = 1 − PFR cuts / cases ordered. NonPFR cuts (for example order rectification) are excluded."},
     ]
-    narrative = (f"{label} PFR is {v['pfr_pct']}%: {fmt_int(v['total_cut'])} cases cut of {fmt_int(v['total_ordered'])} ordered.")
-    if top:
-        narrative += (f" The largest cutter is {top['material']} {top['description']} with {fmt_int(top['cases_cut'])} cases, "
-                      f"{top['share']}% of cuts.")
+    if diag:
+        blocks.append({"type": "table", "title": "Why each top item was cut (workflow: cover, then orders vs lag-1 forecast)",
+                       "columns": [{"key": "material", "label": "Item"},
+                                   {"key": "woc_start", "label": "WoC at month start", "format": "woc", "colour_key": "colour"},
+                                   {"key": "ordered_cases", "label": "Ordered", "format": "int"},
+                                   {"key": "lag1_forecast_cases", "label": "Lag-1 forecast", "format": "int"},
+                                   {"key": "pace", "label": "Orders % of forecast"},
+                                   {"key": "branch", "label": "Diagnosis"}, {"key": "customer", "label": "Top customer (share of cuts)"},
+                                   {"key": "recovery_week", "label": "Back to 2 weeks"}, {"key": "code", "label": "Suggested code (rule)"}],
+                       "rows": diag,
+                       "note": "Cover and lag-1 forecast come from the last weekly Kinaxis load before the month; orders and customers from the "
+                               "PFR extract; recovery is the first plan week at 2 weeks of network cover or more. Codes follow the decision "
+                               "tree's rules (R03 pacing above 130% → B2, R06 attainment under 90% → C0); other items need each cut walked."})
+    n = [f"{label} PFR was {v['pfr_pct']}%, with {fmt_int(v['total_cut'])} cases cut"
+         + (f", {v['top_share_pct']}% of them in the top {v['top_n']} items." if items else ".")]
+    if items:
+        i = items[0]
+        c = i.get("top_customer") or {}
+        n.append(f"The largest driver is {i['material']} {i['description']}"
+                 + (f": {i['woc_start']} weeks of cover at the start of the month" if i.get("woc_start") is not None else "")
+                 + (f", orders at {i['orders_pct_of_forecast']}% of the lag-1 forecast" if i["orders_pct_of_forecast"] is not None else "")
+                 + f" ({i['branch']})"
+                 + (f"; {c['customer'].replace('L2 - ', '')} took {c['share_pct']}% of its cuts" if c else "") + ".")
+        if i["recovery_week"]:
+            n.append(f"Its cover is back to 2 weeks in week {i['recovery_week']}.")
+        if i["suggested_code"]:
+            n.append(f"Suggested code: {i['suggested_code']} ({i['rule']}).")
+    narrative = " ".join(n)
+    brief = narrative + " " + " ".join(f"{d['material']}: {d['branch']}." for d in diag[1:])
     card = {"id": card_id, "scenario": "S4P", "status": "ok", "subtitle": f"{label} · {v['period_from']} to {v['period_to']}",
-            "blocks": blocks, "top_items": [r["material"] for r in rows[:3]]}
+            "blocks": blocks, "top_items": [r["material"] for r in rows[:3]], "brief": brief,
+            "largest_cut": next(({"material": i["material"], **i["largest_cut"]} for i in items if i.get("largest_cut")), None),
+            "why": " ".join(f"{d['material']}: {d['branch']}" + (f", orders {d['pace']}% of forecast" if d["pace"] else "") + "."
+                            for d in diag) or None}
     return finish(card, [res], narrative)
 
 
@@ -567,7 +642,7 @@ def s5_kinaxis(card_id, scope_label, diff) -> dict:
                      {"key": "description", "label": "Description"}, {"key": "location", "label": "LC"},
                      {"key": "woc_a", "label": f"WoC {v['date_a'][5:]}", "format": "woc", "colour_key": "colour_a"},
                      {"key": "woc_b", "label": f"WoC {v['date_b'][5:]}", "format": "woc", "colour_key": "colour_b"},
-                     {"key": "driver", "label": "Main driver"},
+                     {"key": "driver", "label": "Main driver"}, {"key": "driver_detail", "label": "Driver detail"},
                      {"key": "stock_a", "label": "Stock before", "format": "int"},
                      {"key": "stock_b", "label": "Stock after", "format": "int"},
                      {"key": "demand_b", "label": "Fwd demand", "format": "int"}],
@@ -822,6 +897,14 @@ def s3_full(card_id, label, growth, months_label, wc, att_res, cover_res, gap_re
     res = [cover_res, att_res, gap_res] + ([plan_res] if plan_res else []) + list(lanes or [])
     card = {"id": card_id, "scenario": "S3", "status": "ok",
             "subtitle": f"{label} · {fmt_signed(growth)}% · {months_label} · line {wc}", "blocks": blocks}
+    if first:
+        r0 = next(r for r in rows if r["month"] == first)
+        gaps = [r for r in rows if r.get("gap_units")]
+        card["replan"] = {"scenario": "S3", "kind": "EMO and factory request", "text": (
+            f"EMO / factory request for {label} at {fmt_signed(growth)}%: {wc} is short from {first} "
+            f"({fmt_int(r0['gap_units'])} units that month; months short: {', '.join(r['month'] for r in gaps)}). "
+            f"Please confirm second-source volumes for these months from St. Peters, New Jersey or EMO lanes "
+            f"({', '.join(l['source'] for l in lane_rows) or 'no Make or Buy lane on file'}).")}
     return finish(card, res, " ".join(n))
 
 

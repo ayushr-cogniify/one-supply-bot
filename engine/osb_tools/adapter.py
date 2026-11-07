@@ -196,3 +196,30 @@ def kinaxis_snapshots() -> pd.DataFrame:
     df = pd.read_pickle(path)
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
     return df
+
+
+@lru_cache
+def lag_forecast() -> pd.DataFrame:
+    """Lag-1 forecast by material and month: from the latest weekly Kinaxis load taken before the
+    month starts, the FORECAST of the plan weeks that end in that month, summed over the four LCs."""
+    snaps = kinaxis_snapshots()
+    out = []
+    dates = sorted(snaps.snapshot_date.unique())
+    for month in pd.period_range(pd.Timestamp(dates[0]).to_period("M") + 1, pd.Timestamp(dates[-1]).to_period("M") + 1, freq="M"):
+        start = month.to_timestamp()
+        before = [d for d in dates if pd.Timestamp(d) < start]
+        if not before:
+            continue
+        sd = pd.Timestamp(before[-1])
+        s = snaps[(snaps.snapshot_date == sd) & (snaps.CALWEEK != config.OPENING_BUCKET)]
+        weeks = sorted(s.CALWEEK.unique())
+        ends = {w: sd + pd.Timedelta(days=7 * i + 6) for i, w in enumerate(weeks)}
+        keep = [w for w, e in ends.items() if e.to_period("M") == month]
+        g = s[s.CALWEEK.isin(keep)].groupby("MATERIAL").FORECAST.sum()
+        # Network cover at the start of the month, from the same load (6-week forward total demand)
+        first = s[s.CALWEEK == weeks[0]].groupby("MATERIAL").STOCK_PLANNED.sum()
+        fwd = s[s.CALWEEK.isin(weeks[1:7])].groupby("MATERIAL").TOTAL_DEMAND.sum() / 6
+        out += [{"material": m, "month": str(month), "lag1_forecast_cases": float(v), "snapshot_date": sd,
+                 "woc_start": (round(float(first.get(m, 0) / fwd[m]), 1) if fwd.get(m, 0) > 0 else None)}
+                for m, v in g.items()]
+    return pd.DataFrame(out)

@@ -91,12 +91,17 @@ def handle(req: dict, session: dict) -> dict:
             _on_gap(t, req)
         elif kind in ("approve", "reject", "alternate"):
             _on_decision(t, req)
+        elif kind == "draft" and req.get("kind") == "leadership_brief":
+            if session.get("last_brief"):
+                _draft(t, "leadership brief", session["last_brief"])
+            else:
+                t.say("Run a PFR question first, then I can draft the brief from it.")
         elif kind == "draft":
             rp = session.get("last_replan")
             if not rp:
                 t.say("There is no card with a replan need to draft from yet.")
             else:
-                _draft(t, "replan request", rp["text"], replan=rp)
+                _draft(t, rp.get("kind", "replan request"), rp["text"], replan=rp)
         elif kind == "retract":
             if sup.retract(session, req.get("sheet"), req.get("row_id")):
                 t.say(f"Retracted {req.get('row_id')} in the {req.get('sheet')} sheet. The row stays in the sheet, "
@@ -314,10 +319,12 @@ def _on_message(t, text, external=None):
         return _on_decision(t, {"type": "approve", "draft_id": d["draft_id"]})
     if d and REJECT.match(low):
         return _on_decision(t, {"type": "reject", "draft_id": d["draft_id"]})
+    if re.search(r"\bdraft\b", low) and re.search(r"\bbrief\b", low) and s.get("last_brief"):
+        return _draft(t, "leadership brief", s["last_brief"])
     if re.search(r"\bdraft\b", low) and s.get("last_replan") and \
-            re.search(r"\breplan|\bconstraint|\brequest\b|\bcall\b|\bit\b|\bthat\b", low):
+            re.search(r"\breplan|\bconstraint|\brequest\b|\bcall\b|\bit\b|\bthat\b|\bemo\b", low):
         t.span("draft_request", text=text)
-        return _draft(t, "replan request", s["last_replan"]["text"], replan=s["last_replan"])
+        return _draft(t, s["last_replan"].get("kind", "replan request"), s["last_replan"]["text"], replan=s["last_replan"])
     if RERUN.match(low):
         follow = _continue_last(t, {"rerun": True}, text)
         if follow:
@@ -722,16 +729,17 @@ def _done(t, p, card):
     if replan:
         s["last_replan"] = replan
     action = p["slots"].get("out_of_scope_action")
+    kind = (replan or {}).get("kind", "replan request")
     if action:
-        offer = " I can draft a replan request for you to review instead." if replan else ""
+        offer = f" I can draft a {kind} for you to review instead." if replan else ""
         t.say(render("PARTIAL_SCOPE", scenario=f"{card['tag']} {card['title'].lower()}", action=action,
                      draft_offer=offer), template="PARTIAL_SCOPE",
-              options=[{"label": "Draft replan request", "action": {"type": "draft", "kind": "replan_request"}}]
+              options=[{"label": f"Draft {kind}", "action": {"type": "draft", "kind": "replan_request"}}]
               if replan else [])
         t.span("partial_scope", declined=action)
     elif replan:
-        t.say("Want a replan request drafted from this card? Nothing is sent; approving only records it.",
-              options=[{"label": "Draft replan request", "action": {"type": "draft", "kind": "replan_request"}}])
+        t.say(f"Want a {kind} drafted from this card? Nothing is sent; approving only records it.",
+              options=[{"label": f"Draft {kind}", "action": {"type": "draft", "kind": "replan_request"}}])
 
 
 def _new_card_id(t, p):
@@ -834,7 +842,7 @@ def _s2(t, p):
     known = set(adapter.attainment().work_center.dropna())
     # An item named with the attainment change: its line comes from the attainment history, and
     # any extra cases ride on the same run (workflow: "can a +35k increase still be supported?")
-    if sl.get("item_text") and not r.get("material"):
+    if sl.get("item_text") and not r.get("material") and not re.fullmatch(r"(?:the\s+)?(?:increase|line|plan|demand)", sl["item_text"]):
         if not _resolve_item(t, p):
             return
     if r.get("material") and "work_center" not in r and not sl.get("work_center"):
@@ -889,10 +897,14 @@ def _s2(t, p):
     pct = float(r.get("pct", sl.get("pct")))
     window, horizon = _cover_params(t, sl)
     extra, extra_txt = None, ""
-    if r.get("material") and sl.get("delta_cases"):
+    if sl.get("delta_cases"):
         cw = cx.calweek_for(sl.get("week")) or int(cx.cal().CALWEEK.iloc[0])
-        extra = {"material": r["material"], "week": cw, "delta_cases": int(sl["delta_cases"])}
-        extra_txt = f" · plus {cards.fmt_signed(int(sl['delta_cases']))} cases of {r['material']} in week {cw}"
+        if r.get("material"):
+            extra = {"material": r["material"], "week": cw, "delta_cases": int(sl["delta_cases"])}
+            extra_txt = f" · plus {cards.fmt_signed(int(sl['delta_cases']))} cases of {r['material']} in week {cw}"
+        else:   # a line-level increase ("can a +35k increase still be supported?"): spread by demand
+            extra = {"week": cw, "delta_cases": int(sl["delta_cases"])}
+            extra_txt = f" · plus {cards.fmt_signed(int(sl['delta_cases']))} cases spread across the line's SKUs in week {cw}"
     t.echo(f"Attainment change on {cx.wc_label(wc)} · {pct:g}% applied to planned and confirmed production{extra_txt} · "
            f"network weeks of cover · {horizon} weeks")
     att = t.tool("get_attainment", work_center=wc)
@@ -1115,13 +1127,22 @@ def _s4_pareto(t, p):
     scope = sl.get("brand") or "both"
     label = f"{a.strftime('%B %Y')} {scope if scope != 'both' else 'Lysol LDS and Sanitizers'}"
     t.echo(f"PFR cuts by item · {scope if scope != 'both' else 'LDS and Sanitizers'} · {a} to {b} · "
-           "official PFR on shipment date · top 10")
-    res = t.tool("cuts_pareto", period_from=a.isoformat(), period_to=b.isoformat(), scope=scope, top_n=10)
+           "official PFR on shipment date · top 5 diagnosed")
+    res = t.tool("pfr_drilldown", period_from=a.isoformat(), period_to=b.isoformat(), scope=scope, top_n=5)
     t.s["pending"] = None
     if res["status"] != "ok":
         t.say(render("NO_DATA_CUTS", period=label), template="NO_DATA_CUTS")
         return
-    _done(t, p, cards.s4_pareto(_new_card_id(t, p), label, res))
+    card = cards.s4_pareto(_new_card_id(t, p), label, res)
+    _done(t, p, card)
+    t.s["last_brief"] = card.get("brief")
+    opts = [{"label": "Draft leadership brief", "action": {"type": "draft", "kind": "leadership_brief"}}]
+    lc = card.get("largest_cut")
+    if lc:
+        d = date.fromisoformat(lc["cut_date"])
+        opts.append({"label": f"Code the largest cut of {lc['material']}",
+                     "action": {"type": "ask", "text": f"Code the {d.month}/{d.day} cut of {lc['material']} at {lc['lc']}"}})
+    t.say("Next steps from this view:", options=opts)
 
 
 def _s5(t, p):

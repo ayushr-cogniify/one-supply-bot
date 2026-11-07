@@ -1,8 +1,9 @@
 export type Tone = "good" | "warn" | "bad" | "info" | "muted" | null | undefined;
 
 export interface Action {
-  type: "option" | "approve" | "reject" | "alternate" | "open_gap" | "focus" | "draft";
+  type: "option" | "approve" | "reject" | "alternate" | "open_gap" | "focus" | "draft" | "ask";
   kind?: string;
+  text?: string;
   slot?: string;
   value?: unknown;
   label?: string;
